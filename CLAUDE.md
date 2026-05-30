@@ -10,11 +10,16 @@ Ein **lokales, offline RAG-System** (Retrieval-Augmented Generation), das Fragen
 beantwortet. Portfolio-/Lernprojekt für ein Bewerbungsgespräch. Läuft komplett
 offline auf einem **MacBook (Apple Silicon, 8 GB RAM)** – kein Cloud-API.
 
+Es gibt **zwei** Retrieval-Ansätze nebeneinander: das **Vector-RAG** (Basis) und
+die additive **GraphRAG**-Erweiterung (Neo4j + hybrides Retrieval). GraphRAG ist
+rein additiv – das Vector-RAG läuft unverändert, auch ohne Neo4j.
+
 ## Stack
 - **Python 3.12** in venv (`.venv/`)
 - **LLM:** Ollama mit `llama3.2:3b` (umstellbar in `src/config.py`)
 - **Embeddings:** `all-MiniLM-L6-v2` via `sentence-transformers` (384 Dim.)
 - **Vektor-DB:** ChromaDB (`PersistentClient`, speichert in `chroma_db/`)
+- **Graph-DB (GraphRAG):** Neo4j 5.26 via Docker/Colima (`docker-compose.yml`)
 - **API/UI:** FastAPI + uvicorn
 
 ## Voraussetzungen (vor dem ersten Start)
@@ -42,6 +47,21 @@ python -m eval.evaluate            # Retrieval-Qualität messen (Hit@k)
 (Es gibt keine Test-Suite und kein Lint-Setup; `eval/evaluate.py` ist das
 Qualitätsmaß für das Retrieval.)
 
+### GraphRAG-Befehle (additive Erweiterung)
+```bash
+colima start --cpu 2 --memory 4    # Docker-VM (Ollama läuft NATIV daneben, nicht drin)
+docker compose up -d               # Neo4j-Container starten (docker-compose.yml)
+python -m src.graph_store          # Verbindungs-Selbsttest (Neo4j erreichbar?)
+python -m src.graph_ingest         # Graph bauen: Chunks → LLM-Triples → Neo4j (LANGSAM)
+python -m src.graph_pipeline "Frage"   # hybride Antwort (Vektor + Graph)
+python -m src.compare "Frage"      # Demo: Vector-RAG vs. GraphRAG nebeneinander
+python -m eval.compare_eval        # Coverage-Vergleich Vector vs. GraphRAG
+```
+**Reihenfolge GraphRAG:** Neo4j starten → `graph_ingest` (setzt befüllte
+`chroma_db/` für die Chunks *nicht* voraus, lädt selbst aus `data/`; nutzt aber
+Ollama) → dann `graph_pipeline`/`compare`/`compare_eval`. Neo4j-Browser:
+http://localhost:7474 (Login `neo4j`/`sipwise123`, Bolt-URL `bolt://localhost:7687`).
+
 ## Architektur (das große Bild)
 Die Pipeline besteht aus 6 Schritten, je ein Modul in `src/`:
 1. **Laden** (`document_loader.py`) – PDFs aus `data/` → Text
@@ -68,6 +88,36 @@ Die Pipeline besteht aus 6 Schritten, je ein Modul in `src/`:
 - `generator.py` baut den Prompt mit nummerierten `[Quelle N: <Datei>]`-Blöcken,
   damit das LLM Quellen zitieren kann; der **System-Prompt** kommt aus
   `config.py` (nicht im Generator hartkodiert).
+
+## GraphRAG-Architektur (additive Erweiterung)
+Parallel zur Vektor-Pipeline, gleiche „Form" der Einstiegspunkte:
+- **Bauen:** `graph_ingest.py` nutzt *dieselben* `document_loader`/`chunker` wie
+  das Vector-RAG, schickt Chunks durch `graph_extractor.py` (LLM → JSON-Triples)
+  und schreibt sie via `graph_store.py` nach Neo4j.
+- **Abfragen:** `graph_retriever.py` findet Saat-Knoten (Stichwort-`CONTAINS`) und
+  folgt deren Kanten (1-Hop). `hybrid_retriever.py` kombiniert Vektor-Chunks +
+  Graph-Fakten zu *einem* Kontext mit zwei getrennten Abschnitten („Context
+  Fusion"). `graph_pipeline.py::answer_question_graph` ist das hybride Pendant zu
+  `pipeline.py::answer_question` (gleiche Rückgabe-Form + `graph_facts`/`seed_entities`).
+
+**Wichtige Details:**
+- **Datenmodell:** `(:Entity {name, display, type})-[:REL {type, source_doc,
+  chunk_index}]->(:Entity)`. Bewusst EIN Kantentyp `:REL` mit `type`-Eigenschaft
+  (dynamische Kantentypen bräuchten APOC). `name` ist normalisiert (lowercase) →
+  Dedup via `MERGE`; Constraint `entity_name_unique` erzwingt Eindeutigkeit + Index.
+- `graph_store.py` cached den Treiber als Modul-Global (`_driver`, Singleton wie
+  bei ChromaDB/Embeddings). Lesende Queries über `run_read(cypher, **params)`
+  (parametrisiert → kein Cypher-Injection).
+- **Robustheit:** `write_triples` verwirft unvollständige Triples;
+  `graph_extractor._parse_triples` heilt kaputtes LLM-JSON (schneidet `[`…`]`).
+  `hybrid_retrieve` fängt Neo4j-Fehler ab → fällt auf reines Vector-RAG zurück.
+- **Cypher steht direkt im Code, ausführlich kommentiert** (Lernziel) – v. a. in
+  `graph_store.py` und `graph_retriever.py`.
+
+**GraphRAG-Stellschrauben in `config.py`:** `NEO4J_URI/USER/PASSWORD` (per Env
+überschreibbar), `EXTRACTION_MODEL_NAME` (3b↔1b: RAM/Tempo vs. Qualität),
+`MAX_CHUNKS_FOR_GRAPH` (Default 150; `None` = alle), `GRAPH_SEED_ENTITIES`,
+`GRAPH_MAX_FACTS`.
 
 ## Konventionen / Hinweise
 - Alle „Stellschrauben" (Modelle, Pfade, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `TOP_K`,

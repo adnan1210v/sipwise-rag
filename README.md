@@ -20,6 +20,33 @@ faktentreue Antworten mit Quellenangabe statt Halluzinationen.
 
 ---
 
+## 🆕 Zwei Welten: Vector-RAG und GraphRAG
+
+Dieses Projekt hat **zwei** Retrieval-Ansätze, die nebeneinander laufen. Der
+Unterschied in einem Satz:
+
+> **Vector Search findet ähnliche *Texte*. Der Graph findet verbundene *Fakten*.
+> GraphRAG kombiniert beides.**
+
+| | Vector-RAG (Basis) | GraphRAG (Erweiterung) |
+|---|---|---|
+| Sucht nach | **ähnlichen Textstellen** (Bedeutung) | **verbundenen Fakten** (Beziehungen) |
+| Datenbank | ChromaDB (Vektoren) | Neo4j (Knoten + Kanten) |
+| Stark bei | „Worum geht es ungefähr?" | „Wie hängt A mit B und C zusammen?" |
+| Schwäche | Zusammenhänge über mehrere Stellen | braucht erst eine Extraktion (LLM, langsam) |
+
+**Analogie:** Vector-RAG ist wie eine **Volltextsuche**, die dir die passendsten
+Absätze gibt. Der Graph ist wie eine **Mindmap**, in der Begriffe mit Linien
+verbunden sind – du kannst von „Kamailio" zu allem springen, was damit zu tun
+hat. GraphRAG legt beides übereinander: erst die Mindmap fürs „Skelett" der
+Zusammenhänge, dann die Absätze fürs „Fleisch" der Details.
+
+👉 Komplette Anleitung weiter unten: [GraphRAG einrichten & nutzen](#-graphrag-knowledge-graph-einrichten--nutzen).
+Die Konzepte (warum Neo4j, warum Cypher, wie Hybrid-Retrieval funktioniert,
+welche Trade-offs) stehen ausführlich in **[`ERKLAERUNG.md`](ERKLAERUNG.md)**.
+
+---
+
 ## Architektur
 
 ```
@@ -66,12 +93,23 @@ sipwise-rag/
 │   ├── pipeline.py        # verbindet 5+6 (answer_question)
 │   ├── api.py             # [7] FastAPI-Endpoint + Web-Oberfläche
 │   ├── ask.py             # CLI für genau eine Frage
-│   └── chat.py            # interaktiver Terminal-Chat (mehrere Fragen)
+│   ├── chat.py            # interaktiver Terminal-Chat (mehrere Fragen)
+│   │                      # ── GraphRAG-Erweiterung (additiv) ──
+│   ├── graph_store.py     # [G4] Neo4j: Verbindung, Schema, Schreiben/Lesen
+│   ├── graph_extractor.py # [G3] LLM extrahiert Triples (Knoten/Kanten) aus Text
+│   ├── graph_ingest.py    # baut den Graph (Laden→Chunking→Extraktion→Neo4j)
+│   ├── graph_retriever.py # [G5] Saat-Knoten finden + Beziehungen folgen (Cypher)
+│   ├── hybrid_retriever.py# kombiniert Vektor- + Graph-Kontext ("Context Fusion")
+│   ├── graph_pipeline.py  # answer_question_graph (hybride Antwort)
+│   └── compare.py         # Demo: dieselbe Frage Vector-RAG vs. GraphRAG
 ├── web/
 │   └── index.html         # einfache Web-Oberfläche (Textfeld + Antwort)
 ├── eval/
 │   ├── test_questions.json
-│   └── evaluate.py        # misst Retrieval-Qualität (Hit@k)
+│   ├── evaluate.py            # misst Vektor-Retrieval-Qualität (Hit@k)
+│   ├── graph_test_questions.json
+│   └── compare_eval.py        # vergleicht Vector-RAG vs. GraphRAG (Coverage)
+├── docker-compose.yml     # Neo4j-Container (lokal, RAM-gedeckelt)
 ├── requirements.txt
 ├── README.md
 └── ERKLAERUNG.md          # ausführliche Erklärung zum Lernen
@@ -151,6 +189,106 @@ Gibt einen **Hit@k**-Wert aus (fanden wir für die Testfragen die richtige Quell
 
 ---
 
+## 🕸️ GraphRAG (Knowledge Graph) einrichten & nutzen
+
+Die GraphRAG-Erweiterung baut aus der Doku einen **Wissensgraphen** in **Neo4j**
+und kombiniert ihn beim Antworten mit der Vektor-Suche. Sie ist **additiv**: das
+Vector-RAG oben funktioniert unverändert weiter, auch wenn Neo4j gar nicht läuft.
+
+### Zusätzliche Voraussetzungen
+- **Container-Runtime** für Neo4j. Hier genutzt: **Colima** (schlanke, quelloffene
+  Docker-Alternative – RAM-sparsam, ideal für 8 GB).
+  ```bash
+  brew install colima docker docker-compose
+  # docker-compose als Plugin auffindbar machen (einmalig):
+  mkdir -p ~/.docker && printf '{\n  "cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]\n}\n' > ~/.docker/config.json
+  ```
+- Der `neo4j`-Python-Treiber ist in `requirements.txt` enthalten
+  (`pip install -r requirements.txt`).
+
+### Schritt 1 – Neo4j-Container starten
+```bash
+colima start --cpu 2 --memory 4   # Linux-VM für Docker (Ollama läuft NATIV daneben)
+docker compose up -d              # Neo4j aus docker-compose.yml starten
+docker compose ps                 # sollte "Up ... (healthy)" zeigen
+```
+- **Neo4j-Browser:** http://localhost:7474 — Login `neo4j` / `sipwise123`
+  (Connect-URL `bolt://localhost:7687`).
+- **Verbindungstest aus Python:** `python -m src.graph_store`
+  → „✅ Verbindung steht".
+
+Container-Steuerung: `docker compose stop` (anhalten, Daten bleiben),
+`docker compose start` (weiter), `docker compose down` (entfernen, Daten bleiben
+dank Volume), `docker compose down -v` (⚠️ löscht auch die Graph-Daten).
+
+### Schritt 2 – Knowledge Graph bauen (Extraktion)
+```bash
+python -m src.graph_ingest
+```
+Das schickt die Text-Chunks **einzeln durchs lokale LLM** und lässt es Fakten als
+**Triples** (Subjekt → Beziehung → Objekt) extrahieren, die nach Neo4j
+geschrieben werden. ⏱️ **Das ist der langsamste Schritt** (ein LLM-Aufruf pro
+Chunk). Über `MAX_CHUNKS_FOR_GRAPH` in `src/config.py` ist die Anzahl begrenzt
+(Default 150), damit der Graph in Minuten statt Stunden steht – siehe
+[Trade-offs](#-graphrag-trade-offs-ram--geschwindigkeit).
+
+**So sieht der Graph dann im Neo4j-Browser aus** (http://localhost:7474) – diese
+Cypher-Abfrage zeichnet 50 Beziehungen als Bild:
+```cypher
+MATCH p=()-[:REL]->() RETURN p LIMIT 50
+```
+Du siehst Kreise (Entitäten wie *Kamailio*, *Sipwise C5*) und Pfeile dazwischen
+(Beziehungen wie *uses*, *handles*).
+
+### Schritt 3 – Fragen mit GraphRAG beantworten
+```bash
+python -m src.graph_pipeline "What components does Sipwise C5 use?"
+```
+
+### Schritt 4 – Vergleich Vector-RAG vs. GraphRAG (die Interview-Demo!)
+```bash
+python -m src.compare "How is call data stored and which components are involved?"
+```
+Zeigt **dieselbe Frage** zweimal beantwortet – einmal nur Vektor, einmal hybrid –
+samt der genutzten Graph-Fakten. Wähle eine Frage über **Zusammenhänge**, dann
+spielt der Graph seine Stärke aus.
+
+### Schritt 5 – Messen: Coverage-Vergleich
+```bash
+python -m eval.compare_eval
+```
+Misst pro Ansatz, wie viele erwartete Entitäten im abgerufenen Kontext landen
+(Fragen in `eval/graph_test_questions.json`). Beispielergebnis dieses Projekts:
+
+| Ansatz | Coverage |
+|---|---|
+| Vector-RAG | 5/10 (50 %) |
+| **GraphRAG** | **7/10 (70 %)** |
+
+→ GraphRAG liegt bei Zusammenhang-Fragen vorne (z. B. „Wie werden Call-Daten
+gespeichert?": 3/3 statt 2/3).
+
+### 🧠 GraphRAG-Trade-offs (RAM & Geschwindigkeit)
+Wichtiges Interview-Thema – bewusst getroffene Kompromisse auf einem 8-GB-Mac:
+
+- **Colima statt Docker Desktop:** Docker Desktops VM frisst spürbar RAM; Colima
+  ist schlanker. Die VM bekommt **4 GB**, Neo4j selbst ist in `docker-compose.yml`
+  auf **~1 GB** gedeckelt (`heap 512m` + `pagecache 512m`). So bleibt genug RAM
+  fürs **native Ollama** (LLM läuft NICHT in der VM).
+- **Extraktion ist der Flaschenhals:** ein LLM-Aufruf pro Chunk. Stellschrauben in
+  `src/config.py`: `EXTRACTION_MODEL_NAME` (z. B. `llama3.2:1b` statt `3b` →
+  ~2× schneller, gröbere Triples) und `MAX_CHUNKS_FOR_GRAPH` (Anzahl Chunks).
+  Das ist im Kern eine **Quantisierungs-/Modellgröße-vs-Qualität**-Abwägung.
+- **Ein Kantentyp `:REL` mit `type`-Eigenschaft** statt dynamischer Kantentypen –
+  letztere bräuchten die APOC-Erweiterung (mehr RAM/Komplexität).
+- **Nur 1-Hop-Traversierung** im Graph-Retrieval: direkte Nachbarn statt tiefer
+  Pfade – hält den Prompt klein und das kleine LLM fokussiert.
+
+> 💡 Hängt die Extraktion mal an einem Chunk (kommt bei kleinen LLMs vor), kann
+> man den Lauf abbrechen – bereits extrahierte Triples sind in Neo4j gespeichert.
+
+---
+
 ## Tipps & Troubleshooting
 
 - **Speicher wird knapp / sehr langsam:** In `src/config.py` `LLM_MODEL_NAME` auf
@@ -162,6 +300,14 @@ Gibt einen **Hit@k**-Wert aus (fanden wir für die Testfragen die richtige Quell
   (die DB wird dabei sauber neu aufgebaut).
 - **Reproduzierbarkeit (gut fürs Interview):** Nach der Installation
   `pip freeze > requirements.lock.txt`.
+- **GraphRAG: „Keine Verbindung zu Neo4j":** Container läuft nicht oder noch nicht
+  bereit. Prüfen mit `docker compose ps` (Status `healthy`?) und `colima status`.
+  Notfalls `colima start` und `docker compose up -d` erneut.
+- **GraphRAG-Extraktion hängt/dauert ewig:** kleineres `EXTRACTION_MODEL_NAME`
+  (`llama3.2:1b`) und/oder kleineres `MAX_CHUNKS_FOR_GRAPH` in `src/config.py`.
+  Lauf abbrechen ist sicher – bereits geschriebene Triples bleiben im Graph.
+- **`docker compose` nicht gefunden:** `~/.docker/config.json` mit
+  `cliPluginsExtraDirs` anlegen (siehe GraphRAG-Setup oben).
 
 ---
 

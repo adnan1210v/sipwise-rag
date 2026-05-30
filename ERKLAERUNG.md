@@ -306,6 +306,198 @@ sich gut an"*. Messbarkeit ist ein Profi-Signal.
 
 ---
 
+# 🕸️ Teil 2 — GraphRAG verstehen
+
+Dieser Teil erweitert das obige Vector-RAG um einen **Knowledge Graph**. Alles
+hier ist **additiv**: Das Vector-RAG bleibt unangetastet und funktioniert auch,
+wenn Neo4j gar nicht läuft.
+
+## 11. Warum überhaupt ein Graph? (Das Kernproblem)
+
+Vector-RAG findet **ähnliche Textstellen**. Das ist stark, hat aber eine
+Schwäche: Manche Antworten brauchen Fakten, die **über mehrere Stellen verteilt**
+sind und nirgends in EINEM Absatz zusammenstehen.
+
+> **Beispiel:** „Welche Komponenten nutzt Sipwise C5 und wie hängen sie
+> zusammen?" Steht auf Seite 5, dass C5 Kamailio nutzt, auf Seite 40, dass
+> Kamailio SIP verarbeitet, und auf Seite 80, dass Daten in MySQL liegen, dann
+> findet die Vektor-Suche vielleicht nur EINE dieser Stellen. Den **Zusammenhang**
+> sieht sie nicht.
+
+Ein **Graph** speichert genau diese Zusammenhänge als Netz:
+
+```
+   (Sipwise C5) ──uses──▶ (Kamailio) ──handles──▶ (SIP signaling)
+        │
+        └──stores data in──▶ (MySQL)
+```
+
+Jetzt kann man von „Sipwise C5" aus allen Verbindungen folgen und die Fakten
+**einsammeln** – auch wenn sie ursprünglich auf verschiedenen Seiten standen.
+
+**Merksatz:** *Vector Search findet ähnliche Texte, der Graph findet verbundene
+Fakten, GraphRAG kombiniert beides.*
+
+## 12. Grundbegriffe Graph (Glossar)
+
+- **Knoten (Node):** Ein „Ding" im Graph (eine Entität), z. B. *Kamailio*. Hat
+  bei uns das Label `:Entity` und Eigenschaften (`name`, `display`, `type`).
+- **Kante (Relationship/Edge):** Eine Verbindung zwischen zwei Knoten, z. B.
+  *uses*. Hat eine Richtung (von Subjekt zu Objekt).
+- **Triple:** Ein Fakt aus drei Teilen: **(Subjekt) –[Beziehung]→ (Objekt)**.
+  Genau die Bausteine eines Graphen.
+- **Entität:** Ein benennbarer Begriff (Komponente, Protokoll, Konzept …).
+- **Knowledge Graph:** Das gesamte Netz aus Entitäten und ihren Beziehungen.
+- **Cypher:** Die Abfragesprache von Neo4j (das „SQL für Graphen").
+- **Traversierung (Traversal):** Das „Entlanggehen" von Kanten von einem Knoten
+  zu seinen Nachbarn.
+- **Hop:** Ein Schritt entlang einer Kante. „1-Hop" = direkte Nachbarn.
+
+## 13. Warum Neo4j? Warum Cypher?
+
+**Warum Neo4j als Graph-Datenbank?**
+| Grund | Erklärung |
+|---|---|
+| Speziell für Graphen gebaut | Knoten/Kanten sind „first class". Beziehungen zu folgen ist extrem schnell (kein teures JOIN wie in SQL). |
+| Lokal & offline per Docker | Bleibt unserem Datenschutz-Prinzip treu. Ein `docker compose up` genügt. |
+| Mitgelieferter Browser | http://localhost:7474 zeigt den Graphen **visuell** – perfekt zum Lernen und für die Interview-Demo. |
+| Reife, dokumentierte Sprache | Cypher ist lesbar und weit verbreitet. |
+
+**Warum Cypher?** Cypher ist bewusst **visuell** aufgebaut – man „malt" das
+Muster, das man sucht, mit ASCII-Pfeilen:
+
+```cypher
+//  Finde: ein Knoten s, der über eine REL-Kante r auf einen Knoten o zeigt.
+MATCH (s:Entity)-[r:REL]->(o:Entity)
+RETURN s.display, r.type, o.display
+LIMIT 10
+```
+- `( )` ist immer ein **Knoten**, `-[ ]->` immer eine **Kante** (mit Richtung).
+- `MATCH` = „suche dieses Muster". `RETURN` = „gib das zurück".
+Man sieht der Abfrage förmlich an, welche Form sie im Graph sucht. Das ist der
+große Lern-Vorteil von Cypher gegenüber abstraktem SQL.
+
+**Die wichtigsten Cypher-Bausteine in diesem Projekt** (alle im Code kommentiert):
+- `MERGE` – „finde ODER erstelle" (verhindert Duplikate beim Befüllen).
+- `MATCH ... WHERE` – Muster suchen + filtern.
+- `DETACH DELETE` – Knoten samt Kanten löschen (für `reset_graph`).
+- `CREATE CONSTRAINT ... IS UNIQUE` – Eindeutigkeit + automatischer Index.
+- `CONTAINS`, `UNWIND`, `count()`, `startNode()/endNode()` – fürs Retrieval.
+
+## 14. Die GraphRAG-Pipeline Schritt für Schritt
+
+### Bauen (einmalig, `python -m src.graph_ingest`)
+
+**[G1+G2] Laden & Chunking** — *dieselben* Module wie beim Vector-RAG
+(`document_loader.py`, `chunker.py`). Kein doppelter Code – beide Welten bauen
+auf demselben Text auf.
+
+**[G3] Extraktion** — `graph_extractor.py`
+> Jeder Chunk geht durchs **lokale LLM** mit der Bitte: „Zieh die Fakten als
+> JSON-Triples heraus." Ein **Beispiel im Prompt** (Few-Shot) sorgt dafür, dass
+> das kleine Modell zuverlässig sauberes JSON liefert. `temperature=0` →
+> faktentreu, nicht kreativ. Eine **Selbstheilung** schneidet bei kaputtem JSON
+> den Bereich von `[` bis `]` heraus, statt aufzugeben.
+
+**[G4] Speichern** — `graph_store.py`
+> `write_triples()` schreibt jedes Triple mit `MERGE` nach Neo4j. Unvollständige
+> Triples (fehlt Subjekt/Objekt/Beziehung) werden **verworfen** – das LLM liefert
+> nicht immer perfekt, und Müll im Graph wollen wir nicht. Namen werden
+> **normalisiert** (klein, getrimmt), damit „Kamailio" und „kamailio" derselbe
+> Knoten werden.
+
+### Abfragen (bei jeder Frage)
+
+**[G5] Graph-Retrieval** — `graph_retriever.py` (zwei Schritte)
+> 1. **Saat-Knoten finden:** Stichwörter aus der Frage ziehen (ohne Stoppwörter)
+>    und Entitäten suchen, deren Name dazu passt (`CONTAINS`). Das sind die
+>    Einstiegspunkte ins Netz.
+> 2. **Beziehungen folgen (1-Hop):** Von den Saat-Knoten aus die direkt
+>    verbundenen Fakten einsammeln. Bewusst nur **direkte Nachbarn** – mehr Hops
+>    = exponentiell mehr Fakten = das kleine LLM würde überflutet.
+
+**Fusion + Generation** — `hybrid_retriever.py` + `graph_pipeline.py`
+> Der Hybrid-Retriever holt **Vektor-Chunks UND Graph-Fakten** und baut einen
+> Prompt mit **zwei klar getrennten Abschnitten**:
+> ```
+> === FAKTEN AUS DEM WISSENSGRAPH ===   ← das "Skelett" der Zusammenhänge
+> - Kamailio handles SIP signaling.
+> - Sipwise C5 uses Kamailio.
+> === PASSENDE TEXTSTELLEN ===          ← das "Fleisch" der Details
+> [Textstelle 1 | Quelle: handbook.pdf] ...
+> ```
+> Das LLM bekommt beide Blickwinkel und formuliert die Antwort.
+
+## 15. Die Fusions-Strategie („Context Fusion") – und warum so
+
+Wir mischen die beiden Quellen **nicht** zu einem gemeinsamen Zahlen-Score,
+sondern legen sie als **zwei getrennte Abschnitte** in den Prompt. Begründung:
+
+- **Einfach & transparent:** Keine fragile Umrechnung zwischen zwei völlig
+  verschiedenen Maßen (Cosine-Distanz vs. Graph-Trefferzahl). Man sieht jederzeit,
+  welcher Teil woher kam.
+- **Komplementär:** Graph = Struktur/Zusammenhänge, Text = Details/Formulierungen.
+- **Robust (wichtig!):** Findet der Graph nichts (unbekannte Begriffe, Neo4j aus),
+  bleibt der Vektor-Teil voll funktionsfähig. GraphRAG wird also **nie schlechter**
+  als reines Vector-RAG – im schlimmsten Fall gleich gut.
+
+> Profi-Alternativen fürs Interview: **Reciprocal Rank Fusion** (echtes Verschmelzen
+> von Ranglisten) oder ein **Re-Ranker** als zweite Stufe.
+
+## 16. Die Trade-offs (das zentrale Interview-Thema: RAM & Quantisierung)
+
+Auf einem **8-GB-Mac**, auf dem LLM und Graph-DB **gleichzeitig** laufen, ist RAM
+das knappste Gut. Bewusst getroffene Kompromisse:
+
+| Trade-off | Entscheidung | Warum |
+|---|---|---|
+| Container-Runtime | **Colima** statt Docker Desktop | Docker Desktops VM frisst spürbar RAM; Colima ist schlanker. |
+| VM-Größe | 2 CPU / **4 GB** | Genug für Neo4j, lässt ~4 GB für natives Ollama + macOS. Ollama läuft NICHT in der VM. |
+| Neo4j-Speicher | **~1 GB** (`heap 512m` + `pagecache 512m`) | Unser Doku-Graph ist klein; mehr wäre verschwendetes RAM. |
+| Extraktions-Modell | `EXTRACTION_MODEL_NAME` (3b ↔ 1b) | **Kern-Quantisierungs-Abwägung:** kleineres Modell = schneller/weniger RAM, aber gröbere Triples. |
+| Chunk-Anzahl | `MAX_CHUNKS_FOR_GRAPH` (Default 150) | Extraktion = 1 LLM-Aufruf/Chunk. Begrenzen → Minuten statt Stunden. |
+| Kantenmodell | EIN Typ `:REL` + `type`-Eigenschaft | Dynamische Kantentypen bräuchten APOC → mehr RAM/Komplexität. |
+| Traversierung | nur **1 Hop** | Tiefe Pfade = Prompt-Explosion; direkte Nachbarn reichen für Doku-Fragen. |
+
+**Die Quantisierungs-Geschichte fürs Interview:** „Die Entitäts-Extraktion ruft
+das LLM einmal pro Chunk auf – das dominiert die Laufzeit. Auf 8 GB RAM ist das
+eine klassische Abwägung zwischen Modellgröße/Quantisierung und Qualität: Ein
+kleineres, stärker quantisiertes Modell (z. B. 1b) extrahiert deutlich schneller
+und mit weniger Speicher, liefert aber gröbere, manchmal unvollständige Triples.
+Deshalb ist das Modell eine zentrale, leicht umstellbare Stellschraube in
+`config.py`, und unsichere Triples werden beim Schreiben herausgefiltert."
+
+## 17. GraphRAG: typische Interview-Fragen
+
+**„Was ist der Unterschied zwischen Vector-RAG und GraphRAG?"**
+> Vector-RAG sucht semantisch ähnliche Textstellen. GraphRAG sucht zusätzlich
+> verbundene Fakten in einem Knowledge Graph. Vector ist stark bei „worum geht
+> es", Graph bei „wie hängt das zusammen". Mein System kombiniert beide.
+
+**„Wie baust du den Graphen aus unstrukturiertem Text?"**
+> Chunks durchs LLM schicken, das Fakten als Triples (Subjekt-Beziehung-Objekt)
+> im JSON-Format extrahiert; per `MERGE` dedupliziert nach Neo4j schreiben.
+
+**„Warum Neo4j und nicht eine relationale DB?"**
+> Beziehungen zu folgen ist in einem Graph nativ und schnell (keine teuren JOINs),
+> und Cypher macht die Muster sichtbar. Plus visueller Browser zum Lernen.
+
+**„Wie kombinierst du die beiden Retriever?"**
+> Context Fusion: zwei getrennte Kontext-Abschnitte (Graph-Fakten + Textstellen)
+> im Prompt. Transparent, robust, und nie schlechter als reines Vector-RAG.
+
+**„Was war die größte Herausforderung?"**
+> RAM auf 8 GB. Lösung: schlanke Runtime (Colima), gedeckeltes Neo4j, kleineres
+> Extraktions-Modell als Option, begrenzte Chunk-Anzahl – und das alles in
+> `config.py` als bewusste, dokumentierte Stellschrauben.
+
+**„Wie misst du, ob GraphRAG hilft?"**
+> `eval/compare_eval.py` misst pro Ansatz die Coverage erwarteter Entitäten im
+> Kontext. In meinem Lauf: GraphRAG 70 % vs. Vector-RAG 50 %, besonders bei
+> Zusammenhang-Fragen.
+
+---
+
 *Ende. Wenn du eine Stelle vertiefen willst, gib dieses Dokument einem
 Assistenten und frag z. B.: „Erklär mir Abschnitt 4 mit einem Zahlenbeispiel"
-oder „Geh mit mir `chunker.py` Zeile für Zeile durch".*
+oder „Geh mit mir `graph_retriever.py` Zeile für Zeile durch".*

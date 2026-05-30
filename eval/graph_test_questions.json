@@ -1,0 +1,22 @@
+[
+  {
+    "question": "Which components does Sipwise C5 use and how are they connected?",
+    "expected_entities": ["kamailio", "sems", "mysql"],
+    "note": "Mehrere verbundene Fakten nötig – typische Graph-Stärke (Komponenten + ihre Beziehungen)."
+  },
+  {
+    "question": "What does Kamailio handle and what does it connect to?",
+    "expected_entities": ["kamailio", "sip"],
+    "note": "Fragt nach den Beziehungen EINER Komponente zu anderen – 1-Hop-Nachbarschaft im Graph."
+  },
+  {
+    "question": "How is call data stored in the platform?",
+    "expected_entities": ["database", "mysql", "data"],
+    "note": "Verbindung zwischen 'Daten/Calls' und der Speicher-Komponente – über mehrere Sätze verteilt."
+  },
+  {
+    "question": "What protocols are used for signaling and media?",
+    "expected_entities": ["sip", "rtp", "media"],
+    "note": "Mehrere Protokolle + ihre Rollen – Graph kann sie als verbundene Fakten zusammentragen."
+  }
+]
