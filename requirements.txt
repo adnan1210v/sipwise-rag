@@ -1,0 +1,24 @@
+# =============================================================================
+# Python-Abhängigkeiten für das lokale RAG-System
+# =============================================================================
+# Bewusst schlank gehalten – alles läuft offline auf einem 8-GB-Mac.
+# Bewusst NICHT gepinnt, damit pip passende Versionen für Python 3.12 wählt.
+# Tipp fürs Bewerbungsgespräch: Nach erfolgreicher Installation einmal
+#   pip freeze > requirements.lock.txt
+# ausführen -> das ist die exakte, reproduzierbare Version deiner Umgebung.
+
+# --- Dokumente laden ---------------------------------------------------------
+pypdf                 # liest Text aus PDF-Dateien (reines Python, leichtgewichtig)
+
+# --- Embeddings (Schritt 3) --------------------------------------------------
+sentence-transformers # lädt & betreibt das lokale Embedding-Modell (zieht PyTorch mit)
+
+# --- Vektor-Datenbank (Schritt 4) -------------------------------------------
+chromadb              # lokaler Vector Store, speichert auf die Festplatte
+
+# --- Lokales LLM (Schritt 6) -------------------------------------------------
+ollama                # Python-Client, der mit dem lokalen Ollama-Dienst spricht
+
+# --- API (Schritt 7) ---------------------------------------------------------
+fastapi               # schlankes Web-Framework für den Frage-Endpoint
+uvicorn[standard]     # ASGI-Server, der die FastAPI-App ausführt

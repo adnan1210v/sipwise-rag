@@ -1,0 +1,17 @@
+[
+  {
+    "question": "What is Sipwise C5?",
+    "expected_source_keyword": "handbook",
+    "note": "Allgemeine Einstiegsfrage – sollte aus dem Handbuch beantwortbar sein."
+  },
+  {
+    "question": "How is SIP peering configured?",
+    "expected_source_keyword": "handbook",
+    "note": "Technische Detailfrage zu Peering."
+  },
+  {
+    "question": "What database does the platform use?",
+    "expected_source_keyword": "handbook",
+    "note": "Frage nach Architektur/Komponenten."
+  }
+]

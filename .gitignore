@@ -1,0 +1,16 @@
+# Virtuelle Umgebung (nie ins Git – ist groß und maschinenspezifisch)
+.venv/
+venv/
+
+# Python-Cache
+__pycache__/
+*.pyc
+
+# Lokale Vektor-Datenbank (wird aus den Dokumenten neu erzeugt)
+chroma_db/
+
+# Eingespeiste Dokumente: die PDFs werden bewusst mitversioniert (Portfolio-Demo).
+
+# Reproduzierbarer Lock kann rein, lokale Logs nicht
+*.log
+.DS_Store
