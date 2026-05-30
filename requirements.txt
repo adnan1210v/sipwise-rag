@@ -22,3 +22,6 @@ ollama                # Python-Client, der mit dem lokalen Ollama-Dienst spricht
 # --- API (Schritt 7) ---------------------------------------------------------
 fastapi               # schlankes Web-Framework für den Frage-Endpoint
 uvicorn[standard]     # ASGI-Server, der die FastAPI-App ausführt
+
+# --- GraphRAG-Erweiterung (Knowledge Graph) ---------------------------------
+neo4j                 # offizieller Python-Treiber für die Neo4j-Graph-DB (Bolt)

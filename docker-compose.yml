@@ -1,0 +1,95 @@
+# =============================================================================
+# docker-compose.yml — Neo4j Graph-Datenbank für das GraphRAG-System
+# =============================================================================
+#
+# WAS IST DAS?
+#   Diese Datei beschreibt EINEN Container: eine lokale Neo4j-Datenbank.
+#   Mit Docker Compose musst du Neo4j nicht selbst installieren (Java, Dienste,
+#   Pfade) – Docker lädt ein fertiges Image und startet alles isoliert.
+#
+# WICHTIGSTE BEFEHLE (im Projektordner ausführen):
+#   docker compose up -d        # Neo4j im Hintergrund starten (-d = "detached")
+#   docker compose ps           # läuft der Container? Status anzeigen
+#   docker compose logs -f neo4j# Live-Logs ansehen (mit Strg+C verlassen)
+#   docker compose stop         # Container anhalten (Daten bleiben erhalten)
+#   docker compose start        # wieder hochfahren
+#   docker compose down         # Container entfernen (Daten bleiben dank Volume!)
+#   docker compose down -v      # ACHTUNG: -v löscht AUCH die Graph-Daten
+#
+# NACH DEM START:
+#   - Neo4j-Browser im Webbrowser:  http://localhost:7474
+#     -> Login mit Benutzer "neo4j" und dem Passwort unten (NEO4J_AUTH).
+#   - Unsere Python-Module verbinden sich über das "Bolt"-Protokoll (Port 7687).
+#
+# WARUM ZWEI PORTS?
+#   7474 = HTTP, die grafische Browser-Oberfläche (zum Anschauen/Ausprobieren).
+#   7687 = Bolt, das schnelle Binärprotokoll, über das unser Python-Code spricht.
+# =============================================================================
+
+services:
+  neo4j:
+    # Offizielles Neo4j-Image, Community Edition (kostenlos, kein Server-Abo).
+    # Version gepinnt (5.26 LTS) -> reproduzierbar, keine bösen Überraschungen
+    # durch automatische Major-Updates. "Long Term Support" = lange gepflegt.
+    image: neo4j:5.26-community
+
+    container_name: sipwise-neo4j
+
+    # Startet den Container nach einem Neustart des Macs / Docker neu –
+    # außer du hast ihn selbst gestoppt. Bequem für ein Dauerprojekt.
+    restart: unless-stopped
+
+    ports:
+      - "7474:7474"   # Browser-Oberfläche (HTTP)
+      - "7687:7687"   # Datenbank-Verbindung für Python (Bolt)
+
+    environment:
+      # --- Login ------------------------------------------------------------
+      # Format: "BENUTZER/PASSWORT". Benutzer ist bei Neo4j immer "neo4j".
+      # Für ein lokales Offline-Lernprojekt ist ein einfaches Passwort ok.
+      # WICHTIG: Dasselbe Passwort steht in src/config.py (NEO4J_PASSWORD).
+      # Mindestlänge bei Neo4j: 8 Zeichen, sonst startet der Container nicht.
+      - NEO4J_AUTH=neo4j/sipwise123
+
+      # --- Speicher-Limits (DER zentrale RAM-Trade-off!) --------------------
+      # Neo4j würde sich sonst je nach freiem RAM viel mehr nehmen. Auf einem
+      # 8-GB-Mac, auf dem gleichzeitig Ollama (LLM) läuft, MUSS Neo4j sparsam
+      # sein. Diese Werte (~1 GB gesamt) reichen für unseren kleinen Doku-Graph
+      # locker und lassen genug RAM fürs LLM.
+      #
+      #   heap      = Arbeitsspeicher für Cypher-Abfragen/Transaktionen
+      #   pagecache = Cache für die Graph-Daten auf der Platte (schnellere Reads)
+      #
+      # Die kryptischen Namen mit Unterstrichen sind Neo4js Schreibweise für
+      # Konfig-Schlüssel als Umgebungsvariable (Punkte -> doppelte Unterstriche).
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=512m
+      - NEO4J_server_memory_pagecache_size=512m
+
+      # APOC ist eine beliebte Erweiterungs-Bibliothek. Wir brauchen sie für
+      # unser einfaches Modell NICHT, lassen sie aber bewusst weg, um RAM und
+      # Komplexität zu sparen. (Falls du sie später willst: NEO4J_PLUGINS setzen.)
+
+    volumes:
+      # Ein "Named Volume": Docker legt die eigentlichen Graph-Daten hier ab.
+      # Dadurch überleben deine Daten ein "docker compose down" und sogar das
+      # Neuerstellen des Containers. Nur "down -v" löscht das Volume wirklich.
+      - neo4j_data:/data
+      # (Optional könnte man hier auch /logs und /import mounten – für unser
+      #  Projekt reicht /data.)
+
+    # Healthcheck: Docker prüft selbst, ob Neo4j wirklich ANTWORTET (nicht nur
+    # "Prozess gestartet"). cypher-shell führt eine triviale Abfrage aus.
+    # So zeigt "docker compose ps" erst "healthy", wenn die DB wirklich bereit
+    # ist – praktisch, damit unser Ingest nicht zu früh losläuft.
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p sipwise123 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s   # Neo4j braucht beim ersten Start ein paar Sekunden
+
+# Hier wird das oben genutzte Named Volume deklariert. Docker verwaltet den
+# tatsächlichen Speicherort selbst (du musst dich um nichts kümmern).
+volumes:
+  neo4j_data:

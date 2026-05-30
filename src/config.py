@@ -51,3 +51,49 @@ TOP_K = 4
 
 # Name der Collection (Tabelle) in ChromaDB.
 COLLECTION_NAME = "sipwise_docs"
+
+
+# =============================================================================
+# GraphRAG-Erweiterung (Knowledge Graph mit Neo4j)
+# =============================================================================
+# Diese Einstellungen betreffen NUR den neuen Graph-Teil. Das bestehende
+# Vector-RAG oben funktioniert davon völlig unabhängig weiter.
+import os  # nur hier nötig: erlaubt, Werte per Umgebungsvariable zu überschreiben
+
+# --- Neo4j-Verbindung -------------------------------------------------------
+# "bolt://" ist das schnelle Binärprotokoll von Neo4j (Port 7687). localhost,
+# weil die DB als Docker-Container auf DEINEM Rechner läuft – nichts geht ins
+# Internet (bleibt unserem Offline-Prinzip treu).
+# os.getenv(..., default): falls eine Umgebungsvariable gesetzt ist, gewinnt
+# sie – sonst der Default. So kannst du z. B. das Passwort setzen, ohne Code
+# zu ändern. Die Defaults passen exakt zur docker-compose.yml.
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "sipwise123")
+
+# --- LLM für die Graph-EXTRAKTION (Knoten & Kanten aus Text) ----------------
+# Eigene Einstellung, NICHT dasselbe wie LLM_MODEL_NAME oben! Begründung:
+# Die Extraktion ruft das LLM EINMAL PRO CHUNK auf (bei hunderten Chunks also
+# sehr oft) -> das ist der teuerste, langsamste Schritt von GraphRAG.
+# Trade-off (wichtig fürs Interview):
+#   - llama3.2:3b  -> genauer, aber langsamer/speicherhungriger (Default).
+#   - llama3.2:1b  -> ~2x schneller, weniger RAM, dafür etwas gröbere Triples.
+# Wenn die Extraktion zu lange dauert oder RAM knapp wird: hier auf "llama3.2:1b"
+# umstellen (vorher: ollama pull llama3.2:1b).
+EXTRACTION_MODEL_NAME = os.getenv("EXTRACTION_MODEL_NAME", LLM_MODEL_NAME)
+
+# --- Steuerung der Extraktion ----------------------------------------------
+# Aus wie vielen Chunks extrahieren wir? Bei einem 34-MB-Handbuch entstehen
+# SEHR viele Chunks. Jeden durchs LLM zu schicken kann auf 8 GB RAM Stunden
+# dauern. Für ein Demo-/Lernprojekt begrenzen wir die Anzahl, damit der Graph
+# in Minuten statt Stunden steht. None = wirklich ALLE Chunks (Vollausbau).
+# Trade-off: mehr Chunks = reichhaltigerer Graph, aber deutlich längere Laufzeit.
+MAX_CHUNKS_FOR_GRAPH = int(os.getenv("MAX_CHUNKS_FOR_GRAPH", "150"))
+
+# --- Graph-Retrieval --------------------------------------------------------
+# Wie viele "Saat"-Knoten suchen wir pro Frage als Einstiegspunkte in den Graph?
+GRAPH_SEED_ENTITIES = 5
+# Wie viele verbundene Fakten (Triples) geben wir maximal als Kontext ans LLM?
+# Begrenzung, damit der Prompt nicht explodiert und das kleine LLM fokussiert
+# bleibt.
+GRAPH_MAX_FACTS = 30
