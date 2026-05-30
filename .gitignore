@@ -14,3 +14,6 @@ chroma_db/
 # Reproduzierbarer Lock kann rein, lokale Logs nicht
 *.log
 .DS_Store
+
+# Claude Code lokale Laufzeit-Dateien
+.claude/

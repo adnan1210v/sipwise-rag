@@ -493,8 +493,12 @@ Deshalb ist das Modell eine zentrale, leicht umstellbare Stellschraube in
 
 **„Wie misst du, ob GraphRAG hilft?"**
 > `eval/compare_eval.py` misst pro Ansatz die Coverage erwarteter Entitäten im
-> Kontext. In meinem Lauf: GraphRAG 70 % vs. Vector-RAG 50 %, besonders bei
-> Zusammenhang-Fragen.
+> Kontext. In meinem Lauf (kleiner ~150-Chunk-Graph) lagen beide bei **73 %** –
+> gleichauf in der reinen Coverage. Der Unterschied ist hier **qualitativ**:
+> GraphRAG bringt zusätzlich verbundene Fakten in den Prompt. Ehrlich: Ein
+> Coverage-Vorsprung bräuchte einen größeren Graphen und gezielt auf
+> Mehr-Hop-Zusammenhänge zugeschnittene Fragen. Diese Ehrlichkeit beim Messen
+> ist mir wichtiger als ein geschöntes Ergebnis.
 
 ---
 

@@ -258,15 +258,22 @@ spielt der Graph seine Stärke aus.
 python -m eval.compare_eval
 ```
 Misst pro Ansatz, wie viele erwartete Entitäten im abgerufenen Kontext landen
-(Fragen in `eval/graph_test_questions.json`). Beispielergebnis dieses Projekts:
+(Fragen in `eval/graph_test_questions.json`). Ergebnis dieses Projekts mit dem
+(absichtlich begrenzten) ~150-Chunk-Graphen:
 
 | Ansatz | Coverage |
 |---|---|
-| Vector-RAG | 5/10 (50 %) |
-| **GraphRAG** | **7/10 (70 %)** |
+| Vector-RAG | 8/11 (73 %) |
+| GraphRAG | 8/11 (73 %) |
 
-→ GraphRAG liegt bei Zusammenhang-Fragen vorne (z. B. „Wie werden Call-Daten
-gespeichert?": 3/3 statt 2/3).
+→ Bei dieser kleinen Testmenge sind beide in der **reinen Entitäts-Coverage
+gleichauf**. Der Mehrwert von GraphRAG zeigt sich hier **qualitativ**: Es bringt
+zusätzlich **verbundene Fakten** in den Kontext (z. B. 6–19 Graph-Fakten pro
+Frage), die das LLM Zusammenhänge benennen lassen – sichtbar in `src.compare`.
+Ehrliche Einordnung fürs Interview: Ein deutlicher Coverage-Vorsprung würde
+einen **größeren Graphen** (mehr Chunks) und **gezielt auf Mehr-Hop-Zusammenhänge
+gemünzte Testfragen** brauchen. Genau diese „messbare, aber noch nicht
+übertriebene" Ehrlichkeit ist ein gutes Gesprächssignal.
 
 ### 🧠 GraphRAG-Trade-offs (RAM & Geschwindigkeit)
 Wichtiges Interview-Thema – bewusst getroffene Kompromisse auf einem 8-GB-Mac:
