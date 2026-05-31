@@ -9,6 +9,7 @@ Das ist das "R" in RAG. Ablauf:
 
 from . import config
 from .embeddings import embed_query
+from .query_expander import expand_query
 from .vector_store import get_collection, query
 
 
@@ -21,10 +22,37 @@ def retrieve(question: str, top_k: int | None = None) -> list[dict]:
     if top_k is None:
         top_k = config.TOP_K
 
-    # Frage -> Vektor (Schritt 5a)
-    question_vector = embed_query(question)
-
-    # Vektor -> ähnlichste Chunks aus der DB (Schritt 5b)
     collection = get_collection()
-    hits = query(collection, question_vector, top_k)
-    return hits
+
+    # Statt nur die rohe Frage zu suchen, erzeugen wir optional mehrere
+    # Suchvarianten. Das macht kurze deutsche Fragen und Tippfehler robuster,
+    # während englische Fragen unverändert gut funktionieren.
+    if config.QUERY_EXPANSION_ENABLED:
+        variants = expand_query(
+            question,
+            max_variants=config.QUERY_EXPANSION_MAX_VARIANTS,
+        )
+    else:
+        variants = [question]
+
+    merged_hits: dict[tuple[str, int], dict] = {}
+
+    for variant in variants:
+        # Frage/Suchvariante -> Vektor (Schritt 5a)
+        question_vector = embed_query(variant)
+
+        # Vektor -> ähnlichste Chunks aus der DB (Schritt 5b)
+        for hit in query(collection, question_vector, top_k):
+            key = (hit["source"], hit["chunk_index"])
+            existing = merged_hits.get(key)
+            if existing is None or hit["distance"] < existing["distance"]:
+                hit["query_variant"] = variant
+                merged_hits[key] = hit
+
+    # Die Treffer aus allen Varianten werden über die Chroma-Distanz sortiert.
+    # Kleiner = ähnlicher. Danach schneiden wir wieder auf top_k zurück, damit
+    # der Prompt gleich groß bleibt wie vorher.
+    return sorted(
+        merged_hits.values(),
+        key=lambda hit: hit["distance"],
+    )[:top_k]

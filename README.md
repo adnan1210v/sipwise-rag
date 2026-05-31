@@ -88,6 +88,7 @@ sipwise-rag/
 │   ├── embeddings.py      # [3] Embeddings erzeugen
 │   ├── vector_store.py    # [4] speichern + suchen (ChromaDB)
 │   ├── ingest.py          # führt Schritte 1–4 aus (Befüllen)
+│   ├── query_expander.py  # Deutsch/Englisch-Suchvarianten + Tippfehler-Korrektur
 │   ├── retriever.py       # [5] relevante Chunks abrufen
 │   ├── generator.py       # [6] Antwort vom LLM generieren
 │   ├── pipeline.py        # verbindet 5+6 (answer_question)
@@ -186,6 +187,21 @@ python -m src.ask "How do I configure SIP peering?"
 python -m eval.evaluate
 ```
 Gibt einen **Hit@k**-Wert aus (fanden wir für die Testfragen die richtige Quelle?).
+
+### Deutsch & Englisch fragen
+
+Die Doku ist überwiegend Englisch, du kannst aber auch einfache deutsche Fragen
+stellen. `query_expander.py` erzeugt lokal mehrere Suchvarianten, z. B. aus
+`was ist sipwise geanu` die präzisere Suchfrage `What is Sipwise C5?`. Dadurch
+werden Tippfehler und Deutsch/Englisch-Mischungen robuster, ohne Cloud-API und
+ohne die Vektor-Datenbank neu aufzubauen.
+
+Beispiele:
+```bash
+python -m src.ask "What is Sipwise C5?"
+python -m src.ask "was ist sipwise genau"
+python -m src.ask "Wie nutzt Sipwise C5 Kamailio?"
+```
 
 ---
 

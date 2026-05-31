@@ -7,6 +7,7 @@ nicht verstreut im Code. Das macht Experimente nachvollziehbar, was bei
 RAG entscheidend ist (kleine Parameteränderungen = große Qualitätsunterschiede).
 """
 
+import os
 from pathlib import Path
 
 # --- Pfade -------------------------------------------------------------------
@@ -49,6 +50,16 @@ CHUNK_OVERLAP = 120
 # dass irrelevanter Text das LLM ablenkt. 4 ist ein guter Startwert.
 TOP_K = 4
 
+# QUERY_EXPANSION = zusätzliche Suchvarianten für Deutsch/Englisch.
+# Die Sipwise-Dokumente sind überwiegend Englisch. Wenn der Nutzer aber Deutsch
+# fragt ("was ist sipwise genau") oder sich vertippt ("geanu"), landet die
+# deutsche Frage im englischen Embedding-Raum oft zu weit weg von den richtigen
+# Textstellen. Darum erzeugen wir vor der Vektor-Suche kleine lokale Varianten:
+# Originalfrage + Tippfehler-Korrektur + englische Suchform. Keine Cloud, kein
+# zweites LLM, keine neue Datenbank nötig.
+QUERY_EXPANSION_ENABLED = os.getenv("QUERY_EXPANSION_ENABLED", "true").lower() == "true"
+QUERY_EXPANSION_MAX_VARIANTS = int(os.getenv("QUERY_EXPANSION_MAX_VARIANTS", "4"))
+
 # Name der Collection (Tabelle) in ChromaDB.
 COLLECTION_NAME = "sipwise_docs"
 
@@ -58,7 +69,6 @@ COLLECTION_NAME = "sipwise_docs"
 # =============================================================================
 # Diese Einstellungen betreffen NUR den neuen Graph-Teil. Das bestehende
 # Vector-RAG oben funktioniert davon völlig unabhängig weiter.
-import os  # nur hier nötig: erlaubt, Werte per Umgebungsvariable zu überschreiben
 
 # --- Neo4j-Verbindung -------------------------------------------------------
 # "bolt://" ist das schnelle Binärprotokoll von Neo4j (Port 7687). localhost,

@@ -101,10 +101,21 @@ einer eigenen Datei – so bleibt alles übersichtlich und einzeln testbar.
 > Die Frage wird mit **demselben** Embedding-Modell in einen Vektor verwandelt.
 > ChromaDB findet die `TOP_K` (=4) ähnlichsten Chunks.
 
+Vor dem Einbetten läuft `query_expander.py`: Aus einer Frage entstehen mehrere
+Suchvarianten. Beispiel: `was ist sipwise geanu` wird zusätzlich als
+`What is Sipwise C5?` gesucht. Das ist wichtig, weil die Sipwise-Doku überwiegend
+Englisch ist, der Nutzer aber oft Deutsch fragt oder sich vertippt. Die Treffer
+aus allen Varianten werden dedupliziert und wieder auf `TOP_K` gekürzt.
+
 **[6] Generation** — `generator.py`
 > Die gefundenen Chunks + die Frage werden zu einem **Prompt** zusammengebaut und
 > an das lokale LLM (Ollama) geschickt. Ein **System-Prompt** weist es an, NUR
 > aus dem Kontext zu antworten und nichts zu erfinden.
+
+Der Generator bekommt außerdem die normalisierte Suchfrage als Hinweis und eine
+explizite Antwortsprache (`Deutsch` oder `English`). So kann dieselbe App
+deutsche und englische Fragen beantworten, ohne technische Begriffe wie
+`soft-switch` unsinnig wörtlich zu übersetzen.
 
 **[7] API/CLI** — `api.py` / `ask.py`
 > Stellt das Ganze als Web-Endpoint bzw. Kommandozeilen-Tool bereit.

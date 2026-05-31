@@ -69,6 +69,8 @@ Die Pipeline besteht aus 6 Schritten, je ein Modul in `src/`:
 3. **Embeddings** (`embeddings.py`) – Text → 384-dim Vektoren
 4. **Speichern** (`vector_store.py`) – ChromaDB-Collection `sipwise_docs`
 5. **Retrieval** (`retriever.py`) – Frage einbetten, Top-K=4 ähnlichste Chunks
+   (`query_expander.py` erzeugt vorher Deutsch/Englisch-Suchvarianten +
+   Tippfehler-Korrekturen)
 6. **Generation** (`generator.py`) – Chunks + Frage → Ollama → Antwort
 
 **Zwei Phasen, klar getrennt:**
@@ -85,9 +87,12 @@ Die Pipeline besteht aus 6 Schritten, je ein Modul in `src/`:
   geöffnet wird. `reset_collection()` löscht für sauberes Neu-Einspielen.
 - Collection nutzt **Cosine-Distanz** (`metadata={"hnsw:space": "cosine"}`) –
   Embedding-Modell und Distanzmaß müssen zusammenpassen.
+- `query_expander.py` verbessert deutsche Fragen gegen englische Doku ohne neue
+  DB: Originalfrage + korrigierte deutsche Frage + englische Suchvariante werden
+  gesucht, Treffer dedupliziert und wieder auf `TOP_K` gekürzt.
 - `generator.py` baut den Prompt mit nummerierten `[Quelle N: <Datei>]`-Blöcken,
-  damit das LLM Quellen zitieren kann; der **System-Prompt** kommt aus
-  `config.py` (nicht im Generator hartkodiert).
+  gibt normalisierte Suchvarianten als Hinweis mit und setzt die Antwortsprache
+  explizit auf Deutsch oder Englisch.
 
 ## GraphRAG-Architektur (additive Erweiterung)
 Parallel zur Vektor-Pipeline, gleiche „Form" der Einstiegspunkte:
@@ -121,7 +126,7 @@ Parallel zur Vektor-Pipeline, gleiche „Form" der Einstiegspunkte:
 
 ## Konventionen / Hinweise
 - Alle „Stellschrauben" (Modelle, Pfade, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `TOP_K`,
-  `TEMPERATURE`, `MAX_TOKENS`, `SYSTEM_PROMPT`) liegen zentral in `src/config.py`.
+  `QUERY_EXPANSION_ENABLED`, `QUERY_EXPANSION_MAX_VARIANTS`) liegen zentral in `src/config.py`.
   Änderungen am RAG-Verhalten gehören dorthin, nicht in die Module.
 - **Imports laufen über das Paket** (`from src.xyz import ...`); daher alles als
   Modul starten (`python -m src.chat`), nicht direkt (`python src/chat.py`).
