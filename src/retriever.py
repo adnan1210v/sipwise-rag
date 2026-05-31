@@ -36,23 +36,28 @@ def retrieve(question: str, top_k: int | None = None) -> list[dict]:
         variants = [question]
 
     merged_hits: dict[tuple[str, int], dict] = {}
+    fusion_scores: dict[tuple[str, int], float] = {}
 
-    for variant in variants:
+    for variant_index, variant in enumerate(variants):
         # Frage/Suchvariante -> Vektor (Schritt 5a)
         question_vector = embed_query(variant)
 
         # Vektor -> ähnlichste Chunks aus der DB (Schritt 5b)
-        for hit in query(collection, question_vector, top_k):
+        variant_weight = 1.0 + min(variant_index, 3) * 0.05
+        for rank, hit in enumerate(query(collection, question_vector, top_k), start=1):
             key = (hit["source"], hit["chunk_index"])
+            # Reciprocal Rank Fusion: Ränge aus mehreren Suchvarianten sind
+            # robuster vergleichbar als rohe Distanzen verschiedener Fragen.
+            fusion_scores[key] = fusion_scores.get(key, 0.0) + variant_weight / (60 + rank)
             existing = merged_hits.get(key)
             if existing is None or hit["distance"] < existing["distance"]:
                 hit["query_variant"] = variant
                 merged_hits[key] = hit
 
-    # Die Treffer aus allen Varianten werden über die Chroma-Distanz sortiert.
-    # Kleiner = ähnlicher. Danach schneiden wir wieder auf top_k zurück, damit
-    # der Prompt gleich groß bleibt wie vorher.
+    # Die Treffer aus allen Varianten werden per Rank-Fusion sortiert. Das ist
+    # stabiler als rohe Distanzen zu vergleichen, weil jede Suchvariante eine
+    # leicht andere semantische Frage ist.
     return sorted(
         merged_hits.values(),
-        key=lambda hit: hit["distance"],
+        key=lambda hit: (-fusion_scores[(hit["source"], hit["chunk_index"])], hit["distance"]),
     )[:top_k]

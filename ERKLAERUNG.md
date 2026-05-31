@@ -89,7 +89,8 @@ einer eigenen Datei – so bleibt alles übersichtlich und einzeln testbar.
 
 **[3] Embeddings** — `embeddings.py`
 > Jeder Chunk wird in einen 384-Zahlen-Vektor umgewandelt. Das macht das Modell
-> `all-MiniLM-L6-v2`. Jetzt ist „Bedeutung" mathematisch vergleichbar.
+> `paraphrase-multilingual-MiniLM-L12-v2`. Jetzt ist „Bedeutung" mathematisch
+> vergleichbar – auch robuster zwischen Deutsch und Englisch.
 
 **[4] Speichern** — `vector_store.py`
 > Chunks + Vektoren + Metadaten (Quelle, Index) landen in ChromaDB auf der
@@ -101,11 +102,11 @@ einer eigenen Datei – so bleibt alles übersichtlich und einzeln testbar.
 > Die Frage wird mit **demselben** Embedding-Modell in einen Vektor verwandelt.
 > ChromaDB findet die `TOP_K` (=4) ähnlichsten Chunks.
 
-Vor dem Einbetten läuft `query_expander.py`: Aus einer Frage entstehen mehrere
+Zusätzlich läuft `query_expander.py`: Aus einer Frage entstehen mehrere
 Suchvarianten. Beispiel: `was ist sipwise geanu` wird zusätzlich als
-`What is Sipwise C5?` gesucht. Das ist wichtig, weil die Sipwise-Doku überwiegend
-Englisch ist, der Nutzer aber oft Deutsch fragt oder sich vertippt. Die Treffer
-aus allen Varianten werden dedupliziert und wieder auf `TOP_K` gekürzt.
+`What is Sipwise C5?` gesucht. Das ist ein lokaler Fallback für Tippfehler und
+typische Deutsch/Englisch-Mischungen. Die Treffer aus allen Varianten werden
+dedupliziert und wieder auf `TOP_K` gekürzt.
 
 **[6] Generation** — `generator.py`
 > Die gefundenen Chunks + die Frage werden zu einem **Prompt** zusammengebaut und
@@ -140,8 +141,9 @@ Stell dir eine Landkarte vor. Jeder Text bekommt eine Position. Texte mit
                           • "billing rates"   ← liegt weit weg (anderes Thema)
 ```
 
-Statt 2 Dimensionen (Landkarte) benutzt `all-MiniLM-L6-v2` **384 Dimensionen** –
-für uns nicht vorstellbar, aber mathematisch genau dasselbe Prinzip.
+Statt 2 Dimensionen (Landkarte) benutzt unser multilingualer MiniLM-Embedder
+**384 Dimensionen** – für uns nicht vorstellbar, aber mathematisch genau
+dasselbe Prinzip.
 
 ### Wie misst man „nah"?
 Mit der **Cosine-Ähnlichkeit**: Sie schaut auf den **Winkel** zwischen zwei
@@ -164,7 +166,7 @@ Modell aus `embeddings.get_model()`.
 |---|---|---|
 | **Python 3.12** | 3.14 (Systemstandard) | 3.14 ist sehr neu; PyTorch/ChromaDB haben dafür oft noch keine vorgebauten Pakete → Installationsfehler. 3.12 ist stabil. |
 | **`llama3.2:3b`** | 1b / 7b+ | 7b sprengt 8 GB RAM. 1b ist schneller, aber ungenauer. 3b ist der beste Kompromiss; per Config in 1 Zeile auf 1b umstellbar. |
-| **`all-MiniLM-L6-v2`** | größere Embedder | Größere Embedder sind genauer, aber langsamer/größer. MiniLM ist winzig und für unsere Doku gut genug. |
+| **multilingualer MiniLM-Embedder** | rein englischer MiniLM / größere Embedder | Besser für Deutsch+Englisch als ein rein englischer Embedder, aber noch klein genug für 8 GB. |
 | **ChromaDB** | FAISS, Pinecone, pgvector | FAISS hat keine Metadaten/Persistenz out-of-the-box. Pinecone ist Cloud (verboten: offline!). ChromaDB ist lokal, einfach, mit Metadaten. |
 | **800 Zeichen Chunks** | 200 / 2000 | 200 → Kontext zerfällt; 2000 → unpräzise Treffer + mehr RAM. 800 ≈ 1–2 Absätze. |
 | **Eigener Chunker** | LangChain-Splitter | Bewusst selbst gebaut, damit du jede Zeile verstehst (Lernziel). LangChain wäre die „Profi-Abkürzung". |
@@ -408,7 +410,14 @@ auf demselben Text auf.
 > JSON-Triples heraus." Ein **Beispiel im Prompt** (Few-Shot) sorgt dafür, dass
 > das kleine Modell zuverlässig sauberes JSON liefert. `temperature=0` →
 > faktentreu, nicht kreativ. Eine **Selbstheilung** schneidet bei kaputtem JSON
-> den Bereich von `[` bis `]` heraus, statt aufzugeben.
+> den Bereich von `[` bis `]` heraus, statt aufzugeben. Ollama-Aufrufe haben
+> außerdem Timeout + Retry, damit ein hängender Chunk nicht den ganzen Lauf
+> blockiert.
+
+`graph_ingest.py` schreibt extrahierte Triples zuerst als JSONL-Checkpoint nach
+`graph_checkpoints/`. Neo4j wird erst nach abgeschlossener Extraktion geleert
+und neu aufgebaut. Dadurch bleibt ein alter Graph erhalten, wenn der LLM-Lauf
+abgebrochen wird, und der nächste Lauf kann fortsetzen.
 
 **[G4] Speichern** — `graph_store.py`
 > `write_triples()` schreibt jedes Triple mit `MERGE` nach Neo4j. Unvollständige
@@ -421,8 +430,9 @@ auf demselben Text auf.
 
 **[G5] Graph-Retrieval** — `graph_retriever.py` (zwei Schritte)
 > 1. **Saat-Knoten finden:** Stichwörter aus der Frage ziehen (ohne Stoppwörter)
->    und Entitäten suchen, deren Name dazu passt (`CONTAINS`). Das sind die
->    Einstiegspunkte ins Netz.
+>    und Entitäten suchen, deren Name dazu passt (`CONTAINS`). Auch hier werden
+>    die Deutsch/Englisch-Suchvarianten aus `query_expander.py` genutzt. Das sind
+>    die Einstiegspunkte ins Netz.
 > 2. **Beziehungen folgen (1-Hop):** Von den Saat-Knoten aus die direkt
 >    verbundenen Fakten einsammeln. Bewusst nur **direkte Nachbarn** – mehr Hops
 >    = exponentiell mehr Fakten = das kleine LLM würde überflutet.
@@ -467,6 +477,7 @@ das knappste Gut. Bewusst getroffene Kompromisse:
 | Neo4j-Speicher | **~1 GB** (`heap 512m` + `pagecache 512m`) | Unser Doku-Graph ist klein; mehr wäre verschwendetes RAM. |
 | Extraktions-Modell | `EXTRACTION_MODEL_NAME` (3b ↔ 1b) | **Kern-Quantisierungs-Abwägung:** kleineres Modell = schneller/weniger RAM, aber gröbere Triples. |
 | Chunk-Anzahl | `MAX_CHUNKS_FOR_GRAPH` (Default 150) | Extraktion = 1 LLM-Aufruf/Chunk. Begrenzen → Minuten statt Stunden. |
+| Checkpointing | JSONL in `graph_checkpoints/` | Abbruch/Timeout zerstört nicht mehr den alten Graph; Resume ist möglich. |
 | Kantenmodell | EIN Typ `:REL` + `type`-Eigenschaft | Dynamische Kantentypen bräuchten APOC → mehr RAM/Komplexität. |
 | Traversierung | nur **1 Hop** | Tiefe Pfade = Prompt-Explosion; direkte Nachbarn reichen für Doku-Fragen. |
 

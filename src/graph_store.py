@@ -179,6 +179,7 @@ def write_triples(triples: list[dict], source_doc: str, chunk_index: int):
             # perfekte Daten – wir filtern Müll lieber raus, als ihn zu speichern).
             if not s_name or not o_name or not predicate:
                 continue
+            source_id = f"{source_doc}::{chunk_index}"
 
             session.run(
                 """
@@ -188,7 +189,14 @@ def write_triples(triples: list[dict], source_doc: str, chunk_index: int):
                   ON CREATE SET o.display = $o_disp, o.type = $o_type
                 MERGE (s)-[r:REL {type: $predicate}]->(o)
                   ON CREATE SET r.source_doc = $source_doc,
-                                r.chunk_index = $chunk_index
+                                r.chunk_index = $chunk_index,
+                                r.sources = [$source_id]
+                  ON MATCH SET r.sources =
+                    CASE
+                      WHEN r.sources IS NULL THEN [$source_id]
+                      WHEN NOT $source_id IN r.sources THEN r.sources + $source_id
+                      ELSE r.sources
+                    END
                 """,
                 s_name=s_name,
                 s_disp=t.get("subject", "").strip(),
@@ -199,6 +207,7 @@ def write_triples(triples: list[dict], source_doc: str, chunk_index: int):
                 predicate=predicate,
                 source_doc=source_doc,
                 chunk_index=chunk_index,
+                source_id=source_id,
             )
 
 

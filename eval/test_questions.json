@@ -13,5 +13,25 @@
     "question": "What database does the platform use?",
     "expected_source_keyword": "handbook",
     "note": "Frage nach Architektur/Komponenten."
+  },
+  {
+    "question": "was ist sipwise genau?",
+    "expected_source_keyword": "handbook",
+    "note": "Deutsche Frage mit Query-Expansion gegen englische Doku."
+  },
+  {
+    "question": "Wie wird SIP peering konfiguriert?",
+    "expected_source_keyword": "handbook",
+    "note": "Deutsche technische Frage."
+  },
+  {
+    "question": "What is RTPengine used for?",
+    "expected_source_keyword": "rtpengine",
+    "note": "Produktspezifische Frage zu einem Fact-Sheet."
+  },
+  {
+    "question": "What is the Sipwise C5 SIP:Provider CE?",
+    "expected_source_keyword": "handbook",
+    "note": "Produktfrage, die im Handbuch sauber beschrieben wird."
   }
 ]

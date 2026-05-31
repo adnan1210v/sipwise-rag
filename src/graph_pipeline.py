@@ -13,6 +13,7 @@ Ablauf:
 import ollama
 
 from . import config
+from .generator import detect_answer_language, polish_known_model_artifacts
 from .hybrid_retriever import hybrid_retrieve
 
 
@@ -32,7 +33,7 @@ GRAPH_SYSTEM_PROMPT = (
     "erklären, und die Textstellen für Details.\n"
     "3. Du darfst vereinfachen und für Einsteiger erklären, solange es faktisch "
     "korrekt bleibt.\n"
-    "4. Antworte in derselben Sprache wie die Frage.\n"
+    "4. Antworte exakt in der Antwortsprache, die im Prompt angegeben ist.\n"
     "5. Steht die Antwort nicht im Kontext, sage das ehrlich."
 )
 
@@ -68,21 +69,32 @@ def answer_question_graph(question: str, top_k: int | None = None) -> dict:
         }
 
     # Prompt bauen: kombinierter Kontext + Frage.
+    answer_language = detect_answer_language(question)
     prompt = (
         f"{fused_context}\n\n"
-        f"Frage: {question}\n\n"
+        f"Frage: {question}\n"
+        f"Antwortsprache: {answer_language}\n\n"
         f"Antwort (nur basierend auf dem Kontext oben):"
     )
 
-    response = ollama.chat(
+    client = ollama.Client(
+        host=config.OLLAMA_HOST,
+        timeout=config.OLLAMA_TIMEOUT_SECONDS,
+    )
+    response = client.chat(
         model=config.LLM_MODEL_NAME,
         messages=[
-            {"role": "system", "content": GRAPH_SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": GRAPH_SYSTEM_PROMPT
+                + f"\n\nAktuelle Antwortsprache: {answer_language}. "
+                  f"Du MUSST die Antwort in {answer_language} schreiben.",
+            },
             {"role": "user", "content": prompt},
         ],
         options={"temperature": 0.1},
     )
-    answer = response["message"]["content"]
+    answer = polish_known_model_artifacts(response["message"]["content"])
 
     # Quellen der Vektor-Treffer (wie im reinen Vector-RAG) zusammenstellen.
     sources = [

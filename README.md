@@ -68,7 +68,7 @@ welche Trade-offs) stehen ausführlich in **[`ERKLAERUNG.md`](ERKLAERUNG.md)**.
 |---|---|---|
 | Sprache/Umgebung | **Python 3.12 + venv** | 3.12 hat stabile, vorgebaute Pakete für PyTorch/ChromaDB (das neuere 3.14 oft noch nicht). venv isoliert die Abhängigkeiten. |
 | LLM | **Ollama + `llama3.2:3b`** (~2 GB) | Läuft lokal in eigenem Prozess, lädt nur bei Bedarf. Klein genug für 8 GB. Bei Speicherdruck: in `src/config.py` auf `llama3.2:1b` umstellen. |
-| Embeddings | **`all-MiniLM-L6-v2`** (~90 MB, 384 Dim.) | Winzig, schnell, offline; gut für englische technische Texte. |
+| Embeddings | **`paraphrase-multilingual-MiniLM-L12-v2`** (384 Dim.) | Lokal/offline, klein genug für 8 GB, robuster für Deutsch und Englisch. |
 | Vektor-DB | **ChromaDB (PersistentClient)** | Lokal, kein Server, speichert auf Platte. Einfache API, ideal zum Lernen. |
 | Chunking | eigener Splitter, **800 Zeichen / 120 Overlap** | Nachvollziehbar (selbst gebaut), trennt an Absatz-/Satzgrenzen. Balance aus Präzision und Kontext. |
 | API + UI | **FastAPI + uvicorn** | Schlank, automatische Doku unter `/docs`, einfache Web-Oberfläche unter `/`, produktnah. |
@@ -138,6 +138,9 @@ source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
+Für exakt reproduzierbare Versionen liegt zusätzlich `requirements.lock.txt`
+im Repo. Für das normale Setup reicht `requirements.txt`; für eine identische
+Umgebung kannst du stattdessen `pip install -r requirements.lock.txt` nutzen.
 
 ### 4. Dokumente ablegen
 Lege deine Dateien in den Ordner **`data/`** (PDF, `.txt` oder `.md`),
@@ -165,7 +168,8 @@ oft. Beenden mit `exit` oder `Strg+C`.
 uvicorn src.api:app --reload
 ```
 Dann im Browser öffnen: **`http://127.0.0.1:8000/`** – ein Textfeld zum Fragen
-stellen, Antwort schön formatiert mit Quellen.
+stellen, Antwort schön formatiert mit Quellen. In der UI kannst du zwischen
+**Vector** und **GraphRAG** umschalten.
 *(Hinweis: Standard-Port ist 8000. Ist er belegt, mit `--port 8001` starten und
 dann `http://127.0.0.1:8001/` öffnen.)*
 
@@ -174,7 +178,8 @@ dann `http://127.0.0.1:8001/` öffnen.)*
 python -m src.ask "How do I configure SIP peering?"
 ```
 
-> Für Entwickler: Die rohe JSON-API liegt unter `POST /query`, die automatische
+> Für Entwickler: Die rohe JSON-API liegt unter `POST /query`, GraphRAG unter
+> `POST /query_graph`, der Health-Check unter `GET /health` und die automatische
 > API-Doku unter `http://127.0.0.1:8000/docs`. Direkt testen mit curl:
 > ```bash
 > curl -X POST http://127.0.0.1:8000/query \
@@ -190,11 +195,15 @@ Gibt einen **Hit@k**-Wert aus (fanden wir für die Testfragen die richtige Quell
 
 ### Deutsch & Englisch fragen
 
-Die Doku ist überwiegend Englisch, du kannst aber auch einfache deutsche Fragen
-stellen. `query_expander.py` erzeugt lokal mehrere Suchvarianten, z. B. aus
-`was ist sipwise geanu` die präzisere Suchfrage `What is Sipwise C5?`. Dadurch
-werden Tippfehler und Deutsch/Englisch-Mischungen robuster, ohne Cloud-API und
-ohne die Vektor-Datenbank neu aufzubauen.
+Die Doku ist überwiegend Englisch, du kannst aber auch deutsche Fragen stellen.
+Dafür gibt es zwei Ebenen:
+
+1. ein **multilinguales Embedding-Modell**, damit Deutsch und Englisch im selben
+   Vektorraum besser zusammenpassen;
+2. `query_expander.py` als lokalen Fallback für typische Tippfehler und
+   Suchvarianten, z. B. `was ist sipwise geanu` → `What is Sipwise C5?`.
+
+Alles bleibt lokal/offline nach dem ersten Modell-Download.
 
 Beispiele:
 ```bash
@@ -247,6 +256,11 @@ geschrieben werden. ⏱️ **Das ist der langsamste Schritt** (ein LLM-Aufruf pr
 Chunk). Über `MAX_CHUNKS_FOR_GRAPH` in `src/config.py` ist die Anzahl begrenzt
 (Default 150), damit der Graph in Minuten statt Stunden steht – siehe
 [Trade-offs](#-graphrag-trade-offs-ram--geschwindigkeit).
+
+Robustheitsdetail: `graph_ingest` schreibt zuerst Checkpoints nach
+`graph_checkpoints/` und baut Neo4j erst danach neu auf. Wenn Ollama hängt oder
+du den Lauf abbrichst, bleibt der alte Graph erhalten und der nächste Lauf kann
+aus dem Checkpoint weitermachen.
 
 **So sieht der Graph dann im Neo4j-Browser aus** (http://localhost:7474) – diese
 Cypher-Abfrage zeichnet 50 Beziehungen als Bild:
@@ -328,7 +342,8 @@ Wichtiges Interview-Thema – bewusst getroffene Kompromisse auf einem 8-GB-Mac:
   Notfalls `colima start` und `docker compose up -d` erneut.
 - **GraphRAG-Extraktion hängt/dauert ewig:** kleineres `EXTRACTION_MODEL_NAME`
   (`llama3.2:1b`) und/oder kleineres `MAX_CHUNKS_FOR_GRAPH` in `src/config.py`.
-  Lauf abbrechen ist sicher – bereits geschriebene Triples bleiben im Graph.
+  Lauf abbrechen ist sicher – Checkpoints bleiben erhalten, und Neo4j wird erst
+  nach vollständiger Extraktion überschrieben.
 - **`docker compose` nicht gefunden:** `~/.docker/config.json` mit
   `cliPluginsExtraDirs` anlegen (siehe GraphRAG-Setup oben).
 

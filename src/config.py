@@ -10,19 +10,63 @@ RAG entscheidend ist (kleine Parameteränderungen = große Qualitätsunterschied
 import os
 from pathlib import Path
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Robuste Boolean-Umgebungsvariable: true/false, 1/0, yes/no."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    """Integer aus Env lesen, mit klarer Fehlermeldung bei Tippfehlern."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} muss eine ganze Zahl sein, nicht {raw!r}") from exc
+
+
+def _env_optional_int(name: str, default: int | None) -> int | None:
+    """
+    Integer oder None aus Env lesen.
+
+    Damit funktioniert die dokumentierte Einstellung MAX_CHUNKS_FOR_GRAPH=None
+    wirklich, auch per Umgebungsvariable: MAX_CHUNKS_FOR_GRAPH=none.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"none", "null", "all", ""}:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} muss eine ganze Zahl oder 'none' sein, nicht {raw!r}"
+        ) from exc
+
 # --- Pfade -------------------------------------------------------------------
 # Wir leiten alle Pfade vom Projekt-Hauptordner ab, damit das Projekt von
 # überall aus startbar ist (egal aus welchem Verzeichnis du es aufrufst).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"          # hier legst DU deine PDFs/Texte ab
 CHROMA_DIR = PROJECT_ROOT / "chroma_db"   # hier speichert ChromaDB auf Platte
+GRAPH_CHECKPOINT_DIR = PROJECT_ROOT / "graph_checkpoints"
 
 # --- Embedding-Modell (Schritt 3) -------------------------------------------
-# all-MiniLM-L6-v2: ~90 MB, erzeugt 384-dimensionale Vektoren.
-# WARUM dieses Modell? Es ist winzig (passt locker in 8 GB RAM), sehr schnell
-# und für englische technische Texte (wie das Sipwise-Handbuch) gut genug.
-# Es läuft komplett offline, nachdem es einmal heruntergeladen wurde.
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+# paraphrase-multilingual-MiniLM-L12-v2: 384-dimensionale Vektoren, multilingual.
+# WARUM dieses Modell? Es bleibt klein genug für ein 8-GB-MacBook, kann aber
+# Deutsch UND Englisch semantisch besser verbinden als das rein englisch starke
+# all-MiniLM-L6-v2. Nach dem ersten Download läuft es offline.
+EMBEDDING_MODEL_NAME = os.getenv(
+    "EMBEDDING_MODEL_NAME",
+    "paraphrase-multilingual-MiniLM-L12-v2",
+)
 
 # --- LLM (Schritt 6, via Ollama) --------------------------------------------
 # qwen2.5:1.5b (~986 MB) war auf diesem Mac bereits installiert und passt
@@ -32,6 +76,9 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 #   ollama pull llama3.2:3b   ->  dann hier "llama3.2:3b" eintragen.
 # Das ist der einzige nötige Code-Eingriff, um das LLM zu wechseln.
 LLM_MODEL_NAME = "llama3.2:3b"
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_TIMEOUT_SECONDS = _env_int("OLLAMA_TIMEOUT_SECONDS", 120)
+OLLAMA_EXTRACTION_TIMEOUT_SECONDS = _env_int("OLLAMA_EXTRACTION_TIMEOUT_SECONDS", 90)
 
 # --- Chunking (Schritt 2) ----------------------------------------------------
 # CHUNK_SIZE = Länge eines Textstücks in ZEICHEN (nicht Tokens, der Einfachheit
@@ -57,8 +104,8 @@ TOP_K = 4
 # Textstellen. Darum erzeugen wir vor der Vektor-Suche kleine lokale Varianten:
 # Originalfrage + Tippfehler-Korrektur + englische Suchform. Keine Cloud, kein
 # zweites LLM, keine neue Datenbank nötig.
-QUERY_EXPANSION_ENABLED = os.getenv("QUERY_EXPANSION_ENABLED", "true").lower() == "true"
-QUERY_EXPANSION_MAX_VARIANTS = int(os.getenv("QUERY_EXPANSION_MAX_VARIANTS", "4"))
+QUERY_EXPANSION_ENABLED = _env_bool("QUERY_EXPANSION_ENABLED", True)
+QUERY_EXPANSION_MAX_VARIANTS = _env_int("QUERY_EXPANSION_MAX_VARIANTS", 4)
 
 # Name der Collection (Tabelle) in ChromaDB.
 COLLECTION_NAME = "sipwise_docs"
@@ -98,7 +145,8 @@ EXTRACTION_MODEL_NAME = os.getenv("EXTRACTION_MODEL_NAME", LLM_MODEL_NAME)
 # dauern. Für ein Demo-/Lernprojekt begrenzen wir die Anzahl, damit der Graph
 # in Minuten statt Stunden steht. None = wirklich ALLE Chunks (Vollausbau).
 # Trade-off: mehr Chunks = reichhaltigerer Graph, aber deutlich längere Laufzeit.
-MAX_CHUNKS_FOR_GRAPH = int(os.getenv("MAX_CHUNKS_FOR_GRAPH", "150"))
+MAX_CHUNKS_FOR_GRAPH = _env_optional_int("MAX_CHUNKS_FOR_GRAPH", 150)
+GRAPH_INGEST_RESUME = _env_bool("GRAPH_INGEST_RESUME", True)
 
 # --- Graph-Retrieval --------------------------------------------------------
 # Wie viele "Saat"-Knoten suchen wir pro Frage als Einstiegspunkte in den Graph?

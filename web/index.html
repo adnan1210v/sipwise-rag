@@ -28,6 +28,16 @@
       cursor: pointer;
     }
     button:disabled { background: #9ca3af; cursor: wait; }
+    .mode {
+      display: inline-flex; gap: 4px; padding: 4px; margin: 10px 0 0;
+      background: #eef2ff; border-radius: 8px;
+    }
+    .mode label {
+      padding: 7px 10px; border-radius: 6px; font-size: 14px; cursor: pointer;
+      color: #374151;
+    }
+    .mode input { display: none; }
+    .mode label:has(input:checked) { background: #2563eb; color: #fff; }
     /* white-space: pre-wrap sorgt dafür, dass die \n aus der Antwort als
        echte Zeilenumbrüche dargestellt werden – kein "Slash-Salat" mehr. */
     #answer { white-space: pre-wrap; line-height: 1.55; }
@@ -36,6 +46,8 @@
     .sources { margin-top: 16px; }
     .src { font-size: 13px; color: #374151; padding: 6px 10px;
            background: #eef2ff; border-radius: 6px; margin-bottom: 6px; }
+    .fact { font-size: 13px; color: #374151; padding: 6px 10px;
+            background: #ecfdf5; border-radius: 6px; margin-bottom: 6px; }
     .hidden { display: none; }
   </style>
 </head>
@@ -45,6 +57,11 @@
 
   <div class="box">
     <textarea id="question" placeholder="z. B. Was ist SIP-Peering? Erkläre es einfach."></textarea>
+    <div class="mode" aria-label="Retrieval-Modus">
+      <label><input type="radio" name="mode" value="vector" checked />Vector</label>
+      <label><input type="radio" name="mode" value="graph" />GraphRAG</label>
+    </div>
+    <br />
     <button id="askBtn" onclick="ask()">Frage stellen</button>
   </div>
 
@@ -54,6 +71,10 @@
     <div class="sources">
       <div class="label">Quellen</div>
       <div id="sources"></div>
+    </div>
+    <div id="graphBox" class="sources hidden">
+      <div class="label">Graph-Fakten</div>
+      <div id="facts"></div>
     </div>
   </div>
 
@@ -66,28 +87,49 @@
       const result = document.getElementById('result');
       const answerEl = document.getElementById('answer');
       const sourcesEl = document.getElementById('sources');
+      const factsEl = document.getElementById('facts');
+      const graphBox = document.getElementById('graphBox');
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+      const endpoint = mode === 'graph' ? '/query_graph' : '/query';
 
       // UI in "Lade"-Zustand versetzen.
       btn.disabled = true;
       btn.textContent = '… denke nach …';
       result.classList.remove('hidden');
       answerEl.textContent = 'Das lokale LLM arbeitet, einen Moment …';
-      sourcesEl.innerHTML = '';
+      sourcesEl.replaceChildren();
+      factsEl.replaceChildren();
+      graphBox.classList.add('hidden');
 
       try {
         // Genau derselbe /query-Endpoint wie bei curl – nur dass der Browser
         // ihn für dich aufruft und die Antwort schön darstellt.
-        const res = await fetch('/query', {
+        const res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question })
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Request failed');
 
         answerEl.textContent = data.answer;
-        sourcesEl.innerHTML = data.sources.map(s =>
-          `<div class="src">📄 ${s.source} — Chunk ${s.chunk_index} (Distanz ${s.distance})</div>`
-        ).join('');
+        for (const s of data.sources) {
+          const item = document.createElement('div');
+          item.className = 'src';
+          item.textContent = `📄 ${s.source} — Chunk ${s.chunk_index} (Distanz ${s.distance})`;
+          sourcesEl.appendChild(item);
+        }
+
+        if (data.graph_facts && data.graph_facts.length) {
+          graphBox.classList.remove('hidden');
+          for (const f of data.graph_facts.slice(0, 8)) {
+            const item = document.createElement('div');
+            item.className = 'fact';
+            const predicate = (f.predicate || '').replaceAll('_', ' ');
+            item.textContent = `${f.subject} ${predicate} ${f.object}`;
+            factsEl.appendChild(item);
+          }
+        }
       } catch (e) {
         answerEl.textContent = 'Fehler: ' + e.message;
       } finally {

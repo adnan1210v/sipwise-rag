@@ -104,8 +104,13 @@ def expand_query(question: str, max_variants: int = 4) -> list[str]:
     lowered = corrected.lower()
     is_sipwise_what_is = "sipwise" in lowered and _looks_like_what_is_question(lowered)
 
-    _add_unique(variants, original)
-    _add_unique(variants, corrected)
+    # Wenn wir einen klaren Tippfehler korrigieren konnten, suchen wir nicht
+    # zusätzlich nach der fehlerhaften Originalform. Die Originalfrage bleibt
+    # später im Prompt erhalten, aber fürs Retrieval wäre sie nur Rauschen.
+    if corrected.lower() == original.lower():
+        _add_unique(variants, original)
+    else:
+        _add_unique(variants, corrected)
 
     # Häufiger Demo-Fall: Nutzer fragt nur "was ist Sipwise", meint im Projekt
     # aber meist das Produkt Sipwise C5. Diese Variante zieht die richtigen

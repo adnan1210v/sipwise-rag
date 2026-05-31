@@ -20,7 +20,10 @@ der Graph in Minuten statt Stunden steht. Für den vollen Graph: in config.py
 MAX_CHUNKS_FOR_GRAPH = None setzen (dann werden ALLE Chunks verarbeitet).
 """
 
+import json
+import re
 import time
+from pathlib import Path
 
 from . import config
 from .document_loader import load_documents
@@ -71,43 +74,65 @@ def run_graph_ingestion():
               f"(config.MAX_CHUNKS_FOR_GRAPH).")
         print("     (Für den vollen Graph: in config.py auf None setzen.)")
 
-    # --- Schritt 3+4: Frischen Graph anlegen, dann Chunk für Chunk füllen ----
-    # reset_graph() leert alles -> kein Vermischen mit einem alten Lauf.
-    # setup_schema() stellt die Eindeutigkeits-Regel + den Index sicher.
-    print("\n[3/4] Bereite Graph vor (leeren + Schema) ...")
-    reset_graph()
-    setup_schema()
+    checkpoint_path = _checkpoint_path(len(chunks))
+    records = _load_checkpoint(checkpoint_path) if config.GRAPH_INGEST_RESUME else {}
 
-    print(f"\n[4/4] Extrahiere Triples mit '{config.EXTRACTION_MODEL_NAME}' "
-          f"und schreibe sie nach Neo4j ...")
-    print("      (Das LLM wird pro Chunk aufgerufen – bitte etwas Geduld.)\n")
+    # --- Schritt 3: Triples extrahieren und als Checkpoint speichern ----------
+    # Wichtig: Neo4j wird hier noch NICHT geleert. Wenn Ollama hängt oder der Lauf
+    # abbricht, bleibt der bisher funktionierende Graph erhalten. Erst wenn die
+    # Extraktion abgeschlossen ist, bauen wir Neo4j aus dem Checkpoint neu auf.
+    print(f"\n[3/4] Extrahiere Triples mit '{config.EXTRACTION_MODEL_NAME}' ...")
+    print(f"      Checkpoint: {checkpoint_path}")
+    if records:
+        print(f"      Resume aktiv: {len(records)} Chunk(s) bereits im Checkpoint.")
+    print("      (Das LLM wird pro noch fehlendem Chunk aufgerufen.)\n")
 
     start_time = time.time()
-    total_triples = 0
+    newly_extracted = 0
 
     for i, chunk in enumerate(chunks, start=1):
-        # Schritt 3: dieser Chunk -> Liste von Triples (über das LLM).
-        triples = extract_triples(chunk["text"])
-
-        # Schritt 4: Triples dieses Chunks in den Graphen schreiben.
-        # (write_triples filtert intern unvollständige Triples heraus.)
-        write_triples(triples, chunk["source"], chunk["chunk_index"])
-        total_triples += len(triples)
+        chunk_id = _chunk_id(chunk)
+        if chunk_id in records:
+            triples = records[chunk_id]["triples"]
+        else:
+            triples = extract_triples(chunk["text"])
+            record = {
+                "chunk_id": chunk_id,
+                "source": chunk["source"],
+                "chunk_index": chunk["chunk_index"],
+                "triples": triples,
+            }
+            _append_checkpoint(checkpoint_path, record)
+            records[chunk_id] = record
+            newly_extracted += 1
 
         # Fortschritts-Ausgabe alle 10 Chunks (und beim letzten), damit man bei
         # einem langen Lauf sieht, dass etwas passiert – ohne die Konsole zu fluten.
         if i % 10 == 0 or i == len(chunks):
             elapsed = time.time() - start_time
             tempo = i / elapsed if elapsed > 0 else 0
+            total_triples = sum(len(r["triples"]) for r in records.values())
             print(f"   [{i}/{len(chunks)}] Chunks verarbeitet, "
-                  f"{total_triples} Triples extrahiert "
+                  f"{total_triples} Triples im Checkpoint "
                   f"(~{tempo:.1f} Chunks/s)")
+
+    # --- Schritt 4: Neo4j aus dem vollständigen Checkpoint neu aufbauen -------
+    print("\n[4/4] Schreibe Checkpoint nach Neo4j (frischer Graph) ...")
+    reset_graph()
+    setup_schema()
+
+    total_triples = 0
+    for record in records.values():
+        triples = record["triples"]
+        write_triples(triples, record["source"], record["chunk_index"])
+        total_triples += len(triples)
 
     # --- Abschluss-Statistik ------------------------------------------------
     stats = graph_stats()
     elapsed = time.time() - start_time
     print("\n" + "=" * 60)
     print(f"✅ Fertig in {elapsed:.0f}s.")
+    print(f"   Neu extrahierte Chunks: {newly_extracted}")
     print(f"   Roh extrahierte Triples: {total_triples}")
     print(f"   Im Graph: {stats['nodes']} Knoten, "
           f"{stats['relationships']} Kanten.")
@@ -120,6 +145,40 @@ def run_graph_ingestion():
     print("     MATCH p=()-[:REL]->() RETURN p LIMIT 50")
 
     close_driver()
+
+
+def _checkpoint_path(chunk_count: int) -> Path:
+    safe_model = re.sub(r"[^a-zA-Z0-9_.-]+", "_", config.EXTRACTION_MODEL_NAME)
+    filename = f"graph_triples_{safe_model}_{chunk_count}_chunks.jsonl"
+    return config.GRAPH_CHECKPOINT_DIR / filename
+
+
+def _chunk_id(chunk: dict) -> str:
+    return f"{chunk['source']}::{chunk['chunk_index']}"
+
+
+def _load_checkpoint(path: Path) -> dict[str, dict]:
+    records: dict[str, dict] = {}
+    if not path.exists():
+        return records
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        chunk_id = record.get("chunk_id")
+        if chunk_id:
+            records[chunk_id] = record
+    return records
+
+
+def _append_checkpoint(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

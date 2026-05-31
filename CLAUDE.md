@@ -17,7 +17,7 @@ rein additiv – das Vector-RAG läuft unverändert, auch ohne Neo4j.
 ## Stack
 - **Python 3.12** in venv (`.venv/`)
 - **LLM:** Ollama mit `llama3.2:3b` (umstellbar in `src/config.py`)
-- **Embeddings:** `all-MiniLM-L6-v2` via `sentence-transformers` (384 Dim.)
+- **Embeddings:** `paraphrase-multilingual-MiniLM-L12-v2` via `sentence-transformers` (384 Dim.; Deutsch/Englisch)
 - **Vektor-DB:** ChromaDB (`PersistentClient`, speichert in `chroma_db/`)
 - **Graph-DB (GraphRAG):** Neo4j 5.26 via Docker/Colima (`docker-compose.yml`)
 - **API/UI:** FastAPI + uvicorn
@@ -26,6 +26,8 @@ rein additiv – das Vector-RAG läuft unverändert, auch ohne Neo4j.
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+# optional exakt reproduzierbar:
+pip install -r requirements.lock.txt
 ollama serve            # Ollama muss laufen (Standard: http://localhost:11434)
 ollama pull llama3.2:3b # einmalig das LLM-Modell laden
 ```
@@ -70,7 +72,7 @@ Die Pipeline besteht aus 6 Schritten, je ein Modul in `src/`:
 4. **Speichern** (`vector_store.py`) – ChromaDB-Collection `sipwise_docs`
 5. **Retrieval** (`retriever.py`) – Frage einbetten, Top-K=4 ähnlichste Chunks
    (`query_expander.py` erzeugt vorher Deutsch/Englisch-Suchvarianten +
-   Tippfehler-Korrekturen)
+   Tippfehler-Korrekturen; Graph-Seed-Suche nutzt dieselben Varianten)
 6. **Generation** (`generator.py`) – Chunks + Frage → Ollama → Antwort
 
 **Zwei Phasen, klar getrennt:**
@@ -88,8 +90,9 @@ Die Pipeline besteht aus 6 Schritten, je ein Modul in `src/`:
 - Collection nutzt **Cosine-Distanz** (`metadata={"hnsw:space": "cosine"}`) –
   Embedding-Modell und Distanzmaß müssen zusammenpassen.
 - `query_expander.py` verbessert deutsche Fragen gegen englische Doku ohne neue
-  DB: Originalfrage + korrigierte deutsche Frage + englische Suchvariante werden
-  gesucht, Treffer dedupliziert und wieder auf `TOP_K` gekürzt.
+  Cloud-API: multilingualer Embedder + Originalfrage + korrigierte deutsche
+  Frage + englische Suchvariante werden gesucht, Treffer dedupliziert und wieder
+  auf `TOP_K` gekürzt.
 - `generator.py` baut den Prompt mit nummerierten `[Quelle N: <Datei>]`-Blöcken,
   gibt normalisierte Suchvarianten als Hinweis mit und setzt die Antwortsprache
   explizit auf Deutsch oder Englisch.
@@ -115,24 +118,27 @@ Parallel zur Vektor-Pipeline, gleiche „Form" der Einstiegspunkte:
   (parametrisiert → kein Cypher-Injection).
 - **Robustheit:** `write_triples` verwirft unvollständige Triples;
   `graph_extractor._parse_triples` heilt kaputtes LLM-JSON (schneidet `[`…`]`).
-  `hybrid_retrieve` fängt Neo4j-Fehler ab → fällt auf reines Vector-RAG zurück.
+  `extract_triples` nutzt Ollama-Timeout/Retry. `graph_ingest` schreibt zuerst
+  JSONL-Checkpoints nach `graph_checkpoints/` und ersetzt Neo4j erst nach
+  vollständiger Extraktion. `hybrid_retrieve` fängt Neo4j-Fehler ab → fällt auf
+  reines Vector-RAG zurück.
 - **Cypher steht direkt im Code, ausführlich kommentiert** (Lernziel) – v. a. in
   `graph_store.py` und `graph_retriever.py`.
 
 **GraphRAG-Stellschrauben in `config.py`:** `NEO4J_URI/USER/PASSWORD` (per Env
 überschreibbar), `EXTRACTION_MODEL_NAME` (3b↔1b: RAM/Tempo vs. Qualität),
 `MAX_CHUNKS_FOR_GRAPH` (Default 150; `None` = alle), `GRAPH_SEED_ENTITIES`,
-`GRAPH_MAX_FACTS`.
+`GRAPH_MAX_FACTS`, `OLLAMA_TIMEOUT_SECONDS`, `OLLAMA_EXTRACTION_TIMEOUT_SECONDS`.
 
 ## Konventionen / Hinweise
 - Alle „Stellschrauben" (Modelle, Pfade, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `TOP_K`,
-  `QUERY_EXPANSION_ENABLED`, `QUERY_EXPANSION_MAX_VARIANTS`) liegen zentral in `src/config.py`.
+  `QUERY_EXPANSION_ENABLED`, `QUERY_EXPANSION_MAX_VARIANTS`, Timeouts) liegen zentral in `src/config.py`.
   Änderungen am RAG-Verhalten gehören dorthin, nicht in die Module.
 - **Imports laufen über das Paket** (`from src.xyz import ...`); daher alles als
   Modul starten (`python -m src.chat`), nicht direkt (`python src/chat.py`).
 - Code-Kommentare und Doku sind auf **Deutsch**, der Nutzer ist Anfänger und
   möchte alles verstehen und im Interview erklären können → Antworten einfach
   halten und Designentscheidungen begründen.
-- Der System-Prompt in `config.py` erlaubt Vereinfachen, verbietet aber
-  erfundene Fakten/Abkürzungen; bei fehlendem Kontext soll das LLM ehrlich
+- Der System-Prompt in `generator.py` / `graph_pipeline.py` erlaubt Vereinfachen,
+  verbietet aber erfundene Fakten/Abkürzungen; bei fehlendem Kontext soll das LLM ehrlich
   „steht nicht in der Doku" sagen.

@@ -27,6 +27,7 @@ Nachbarn die relevanten Zusammenhänge. (Trade-off bewusst – im README erklär
 import re
 
 from . import config
+from .query_expander import expand_query
 from .graph_store import run_read
 
 
@@ -37,9 +38,13 @@ _STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "of", "to", "in", "on",
     "for", "and", "or", "what", "how", "does", "do", "can", "which", "who",
     "with", "by", "as", "at", "be", "this", "that", "it", "its", "from",
+    "use", "uses", "used", "using", "connected", "components", "component",
+    "sipwise",  # zu generisch: trifft Firma, C4, C5, Mailadressen etc.
     "wie", "was", "der", "die", "das", "und", "oder", "ist", "sind", "ein",
     "eine", "von", "zu", "im", "in", "auf", "für", "mit", "welche", "wer",
+    "nutzt", "benutzt", "verwendet", "genau", "komponenten", "verbunden",
 }
+_SHORT_TECH_TERMS = {"c4", "c5"}
 
 
 def _keywords(question: str) -> list[str]:
@@ -52,7 +57,10 @@ def _keywords(question: str) -> list[str]:
     """
     # \w+ findet zusammenhängende Wort-Zeichen; alles klein für robusten Vergleich.
     words = re.findall(r"\w+", question.lower())
-    return [w for w in words if len(w) >= 3 and w not in _STOPWORDS]
+    return [
+        w for w in words
+        if (len(w) >= 3 or w in _SHORT_TECH_TERMS) and w not in _STOPWORDS
+    ]
 
 
 def find_seed_entities(question: str, limit: int | None = None) -> list[dict]:
@@ -76,7 +84,16 @@ def find_seed_entities(question: str, limit: int | None = None) -> list[dict]:
     if limit is None:
         limit = config.GRAPH_SEED_ENTITIES
 
-    keywords = _keywords(question)
+    questions = (
+        expand_query(question, max_variants=config.QUERY_EXPANSION_MAX_VARIANTS)
+        if config.QUERY_EXPANSION_ENABLED
+        else [question]
+    )
+    keywords = []
+    for q in questions:
+        for keyword in _keywords(q):
+            if keyword not in keywords:
+                keywords.append(keyword)
     if not keywords:
         return []
 
@@ -85,9 +102,10 @@ def find_seed_entities(question: str, limit: int | None = None) -> list[dict]:
         UNWIND $keywords AS kw
         MATCH (e:Entity)
         WHERE e.name CONTAINS kw
-        WITH e, count(*) AS hits
+        WITH e, count(*) AS hits,
+             CASE WHEN e.name IN $keywords THEN 1 ELSE 0 END AS exact
         RETURN e.name AS name, e.display AS display, e.type AS type, hits
-        ORDER BY hits DESC, name ASC
+        ORDER BY exact DESC, hits DESC, name ASC
         LIMIT $limit
         """,
         keywords=keywords,

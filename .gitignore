@@ -9,6 +9,9 @@ __pycache__/
 # Lokale Vektor-Datenbank (wird aus den Dokumenten neu erzeugt)
 chroma_db/
 
+# Graph-Extraktions-Checkpoints (werden lokal aus den Dokumenten neu erzeugt)
+graph_checkpoints/
+
 # Eingespeiste Dokumente: die PDFs werden bewusst mitversioniert (Portfolio-Demo).
 
 # Reproduzierbarer Lock kann rein, lokale Logs nicht

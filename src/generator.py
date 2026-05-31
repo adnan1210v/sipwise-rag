@@ -7,6 +7,7 @@ RAG: Das Modell soll nicht "frei fantasieren" (halluzinieren), sondern sich auf
 die mitgelieferten Dokumente stützen.
 """
 
+import re
 import ollama
 from . import config
 
@@ -35,7 +36,10 @@ SYSTEM_PROMPT = (
     "SIP-based Class 5 VoIP soft-switch platform dürfen auf Englisch stehen, "
     "wenn eine deutsche Übersetzung unnatürlich wäre. Übersetze soft-switch "
     "auf Deutsch höchstens als Softswitch, nie wörtlich als Weiche/Kabel.\n"
-    "7. Steht die Antwort gar nicht im Kontext, sage ehrlich, dass die "
+    "7. Bei allgemeinen 'Was ist ...?'-Fragen: Gib zuerst eine kurze Definition "
+    "und danach nur die wichtigsten Eigenschaften. Nenne Detailthemen wie "
+    "STIR/SHAKEN nur, wenn die Frage danach fragt.\n"
+    "8. Steht die Antwort gar nicht im Kontext, sage ehrlich, dass die "
     "Dokumentation dazu nichts hergibt."
 )
 
@@ -54,7 +58,7 @@ def _build_prompt(question: str, chunks: list[dict]) -> str:
         )
     context = "\n\n".join(context_blocks)
     query_variants = _query_variants_from_chunks(question, chunks)
-    answer_language = _detect_answer_language(question)
+    answer_language = detect_answer_language(question)
 
     normalized_question = query_variants[0] if query_variants else None
 
@@ -94,7 +98,7 @@ def _query_variants_from_chunks(question: str, chunks: list[dict]) -> list[str]:
     return variants[:3]
 
 
-def _detect_answer_language(question: str) -> str:
+def detect_answer_language(question: str) -> str:
     """
     Simple Heuristik reicht hier: Die App ist für Deutsch/Englisch gedacht.
     Wenn typische deutsche Wörter vorkommen, antworten wir Deutsch, sonst
@@ -117,7 +121,8 @@ def _detect_answer_language(question: str) -> str:
         "datenbank",
         "genau",
     }
-    if any(re_marker in lowered.split() for re_marker in german_markers):
+    words = set(re.findall(r"\w+", lowered))
+    if words & german_markers:
         return "Deutsch"
     return "English"
 
@@ -130,13 +135,17 @@ def generate_answer(question: str, chunks: list[dict]) -> str:
     einmal heruntergeladen worden sein:  ollama pull llama3.2:3b
     """
     prompt = _build_prompt(question, chunks)
-    answer_language = _detect_answer_language(question)
+    answer_language = detect_answer_language(question)
     language_instruction = (
         f"\n\nAktuelle Antwortsprache: {answer_language}. "
         f"Du MUSST die Antwort in {answer_language} schreiben."
     )
 
-    response = ollama.chat(
+    client = ollama.Client(
+        host=config.OLLAMA_HOST,
+        timeout=config.OLLAMA_TIMEOUT_SECONDS,
+    )
+    response = client.chat(
         model=config.LLM_MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT + language_instruction},
@@ -145,4 +154,25 @@ def generate_answer(question: str, chunks: list[dict]) -> str:
         # temperature niedrig -> faktentreue, weniger "kreative" Antworten.
         options={"temperature": 0.1},
     )
-    return response["message"]["content"]
+    return polish_known_model_artifacts(response["message"]["content"])
+
+
+def polish_known_model_artifacts(answer: str) -> str:
+    """
+    Kleine Glättung bekannter Übersetzungsfehler lokaler Kleinstmodelle.
+
+    Das 3B-Modell übersetzt "soft-switch" manchmal wörtlich als "Weiche/Kabel".
+    Das ist fachlich missverständlich; "Softswitch" ist im Deutschen der
+    etablierte technische Begriff.
+    """
+    replacements = {
+        "VoIP-Weiche/Kabel-Plattform": "VoIP-Softswitch-Plattform",
+        "VoIP-Weicheleitplattform": "VoIP-Softswitch-Plattform",
+        "VoIP-Weichspulsmittelplattform": "VoIP-Softswitch-Plattform",
+        "VoIP-Weichekabel": "VoIP-Softswitch",
+        "Class 5-Weiche": "Class-5-Softswitch",
+        "Stirim/SHAKEN": "STIR/SHAKEN",
+    }
+    for wrong, right in replacements.items():
+        answer = answer.replace(wrong, right)
+    return answer

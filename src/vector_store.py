@@ -15,7 +15,21 @@ WARUM ChromaDB?
 """
 
 import chromadb
+from threading import RLock
 from .config import CHROMA_DIR, COLLECTION_NAME
+
+_client = None
+_collection = None
+_lock = RLock()
+
+
+def get_client():
+    """Öffnet ChromaDB einmal und verwendet denselben Client weiter."""
+    global _client
+    with _lock:
+        if _client is None:
+            _client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    return _client
 
 
 def get_collection():
@@ -26,12 +40,14 @@ def get_collection():
     Ähnlichkeitsmaß – Standard für Text-Embeddings, weil es die RICHTUNG der
     Vektoren vergleicht (Bedeutung), nicht ihre Länge.
     """
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    collection = client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},
-    )
-    return collection
+    global _collection
+    with _lock:
+        if _collection is None:
+            _collection = get_client().get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+    return _collection
 
 
 def reset_collection():
@@ -41,16 +57,19 @@ def reset_collection():
     Nützlich beim erneuten Einspeisen: So vermeiden wir Duplikate, wenn das
     Ingest-Skript mehrfach läuft.
     """
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    try:
-        client.delete_collection(name=COLLECTION_NAME)
-    except Exception:
-        # Collection existierte noch nicht – kein Problem.
-        pass
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},
-    )
+    global _collection
+    with _lock:
+        client = get_client()
+        try:
+            client.delete_collection(name=COLLECTION_NAME)
+        except Exception:
+            # Collection existierte noch nicht – kein Problem.
+            pass
+        _collection = client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+        return _collection
 
 
 def add_chunks(collection, chunks: list[dict], embeddings: list[list[float]]):

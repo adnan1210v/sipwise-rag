@@ -48,6 +48,7 @@ langsamste, teuerste Schritt von GraphRAG. Auf einem 8-GB-Mac bedeutet das:
 """
 
 import json
+import time
 import ollama
 
 from . import config
@@ -153,18 +154,32 @@ def extract_triples(text: str) -> list[dict]:
     """
     prompt = _build_extraction_prompt(text)
 
-    response = ollama.chat(
-        model=config.EXTRACTION_MODEL_NAME,
-        messages=[
-            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        # temperature=0 -> möglichst deterministisch & faktentreu. Bei Extraktion
-        # wollen wir keine "Kreativität", sondern immer dieselbe saubere Struktur.
-        options={"temperature": 0},
+    client = ollama.Client(
+        host=config.OLLAMA_HOST,
+        timeout=config.OLLAMA_EXTRACTION_TIMEOUT_SECONDS,
     )
-    raw = response["message"]["content"]
-    return _parse_triples(raw)
+
+    last_error: Exception | None = None
+    for attempt in range(1, 3):
+        try:
+            response = client.chat(
+                model=config.EXTRACTION_MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                # temperature=0 -> möglichst deterministisch & faktentreu.
+                options={"temperature": 0},
+            )
+            raw = response["message"]["content"]
+            return _parse_triples(raw)
+        except Exception as exc:
+            last_error = exc
+            if attempt == 1:
+                time.sleep(1)
+
+    print(f"  ⚠️  Triple-Extraktion übersprungen (Ollama-Fehler): {last_error}")
+    return []
 
 
 # -----------------------------------------------------------------------------
