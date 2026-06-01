@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wissensgraph — Sipwise C5</title>
+  <style>
+    /* =====================================================================
+       Design-Tokens. Bewusst dieselbe Designsprache wie die Chat-UI
+       (gleicher Blauton, System-Fonts, Radien, Schatten), nur um eine
+       kühle Neutral-Ebene für Werkzeugleiste/Panels erweitert. Alles offline:
+       die Graph-Bibliothek liegt lokal unter /vendor.
+       ===================================================================== */
+    :root {
+      --bg: #f3f4f6;            /* Arbeitsfläche (Canvas)            */
+      --surface: #ffffff;       /* Panels, Werkzeugleiste           */
+      --surface-2: #f9fafb;     /* leicht abgesetzte Flächen        */
+      --border: #e5e7eb;
+      --border-strong: #d1d5db;
+      --ink: #111726;           /* Primärtext (~15:1 auf surface)   */
+      --ink-2: #3f4654;         /* Sekundärtext (~9:1)              */
+      --muted: #5b6472;         /* Tertiärtext (~6:1, WCAG AA)      */
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
+      --accent-weak: #eef4ff;
+      --focus: 0 0 0 3px rgba(37, 99, 235, .35);
+      --radius: 10px;
+      --radius-sm: 8px;
+      --radius-pill: 999px;
+      --shadow-sm: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+      --shadow-md: 0 8px 28px -8px rgba(16, 24, 40, .22);
+      --tap: 40px;              /* Touch-Zielgröße                  */
+      --ease: cubic-bezier(.22, 1, .36, 1);   /* ease-out-quint    */
+      --dur: 200ms;
+      /* Semantische z-Ebenen statt willkürlicher Zahlen. */
+      --z-canvas: 0; --z-controls: 10; --z-panel: 20; --z-toolbar: 30; --z-overlay: 40;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--ink); background: var(--bg);
+      display: grid; grid-template-rows: auto 1fr; height: 100dvh;
+      -webkit-font-smoothing: antialiased; overflow: hidden;
+    }
+
+    /* --- Werkzeugleiste ------------------------------------------------- */
+    .toolbar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 0 16px; height: 56px;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      z-index: var(--z-toolbar);
+    }
+    .brand { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+    .brand h1 {
+      font-size: 16px; font-weight: 650; letter-spacing: -.01em; margin: 0;
+      white-space: nowrap;
+    }
+    .brand .ctx {
+      font-size: 13px; color: var(--muted); white-space: nowrap;
+    }
+    @media (max-width: 640px) { .brand .ctx { display: none; } }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 36px; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 550;
+      color: var(--ink-2); background: var(--surface); cursor: pointer;
+      border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+                  color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+    }
+    .btn:hover { background: var(--surface-2); border-color: #c2c7d0; color: var(--ink); }
+    .btn:active { background: #f1f2f4; }
+    .btn:focus-visible { outline: none; box-shadow: var(--focus); }
+    a.btn { text-decoration: none; }
+
+    .search {
+      position: relative; flex: 0 1 320px; margin-left: 4px;
+    }
+    .search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+                  width: 16px; height: 16px; color: var(--muted); pointer-events: none; }
+    .search input {
+      width: 100%; height: 38px; padding: 0 34px 0 34px; font: inherit; font-size: 14px;
+      color: var(--ink); background: var(--surface-2);
+      border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+                  box-shadow var(--dur) var(--ease);
+    }
+    .search input::placeholder { color: var(--muted); }
+    .search input:hover { border-color: #c2c7d0; }
+    .search input:focus { outline: none; background: var(--surface);
+                          border-color: var(--accent); box-shadow: var(--focus); }
+    .search .clear {
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      display: none; align-items: center; justify-content: center;
+      width: 26px; height: 26px; border: 0; border-radius: 6px; cursor: pointer;
+      background: transparent; color: var(--muted); font-size: 16px; line-height: 1;
+    }
+    .search .clear:hover { background: var(--surface-2); color: var(--ink); }
+    .search .clear:focus-visible { outline: none; box-shadow: var(--focus); }
+    .search[data-filled="true"] .clear { display: inline-flex; }
+    .kbd {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      font-size: 11px; color: var(--muted); border: 1px solid var(--border-strong);
+      border-radius: 5px; padding: 1px 5px; background: var(--surface);
+      pointer-events: none;
+    }
+    .search[data-filled="true"] .kbd, .search:focus-within .kbd { display: none; }
+
+    .spacer { flex: 1; }
+    .stats {
+      font-size: 13px; color: var(--muted); white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    @media (max-width: 760px) { .stats { display: none; } }
+
+    /* --- Bühne (Canvas + Panels) --------------------------------------- */
+    .stage { position: relative; min-height: 0; overflow: hidden; }
+    #graph { position: absolute; inset: 0; z-index: var(--z-canvas); }
+
+    /* Zoom-Steuerung, Kartenkonvention unten links. */
+    .controls {
+      position: absolute; left: 16px; bottom: 16px; z-index: var(--z-controls);
+      display: flex; flex-direction: column; background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      box-shadow: var(--shadow-sm); overflow: hidden;
+    }
+    .controls button {
+      width: var(--tap); height: var(--tap); border: 0; background: var(--surface);
+      color: var(--ink-2); font-size: 18px; line-height: 1; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+    }
+    .controls button + button { border-top: 1px solid var(--border); }
+    .controls button:hover { background: var(--surface-2); color: var(--ink); }
+    .controls button:active { background: #f1f2f4; }
+    .controls button:focus-visible { outline: none; box-shadow: var(--focus); z-index: 1; }
+
+    /* Legende, unten links über der Zoom-Steuerung. */
+    .legend {
+      position: absolute; left: 16px; bottom: calc(16px + 3 * var(--tap) + 10px);
+      z-index: var(--z-controls); max-width: 240px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); box-shadow: var(--shadow-sm);
+      padding: 10px 12px;
+    }
+    .legend h2 { font-size: 11px; font-weight: 600; text-transform: uppercase;
+                 letter-spacing: .05em; color: var(--muted); margin: 0 0 8px; }
+    .legend ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+    .legend li { display: flex; align-items: center; gap: 8px; font-size: 13px;
+                 color: var(--ink-2); }
+    .dot { width: 10px; height: 10px; border-radius: 50%; flex: none;
+           box-shadow: 0 0 0 1px rgba(0,0,0,.06) inset; }
+    @media (max-height: 560px) { .legend { display: none; } }
+
+    /* --- Detail-Panel (Auswahl) ---------------------------------------- */
+    .inspector {
+      position: absolute; top: 0; right: 0; bottom: 0; z-index: var(--z-panel);
+      width: min(340px, 86vw); display: flex; flex-direction: column;
+      background: var(--surface); border-left: 1px solid var(--border);
+      box-shadow: var(--shadow-md);
+      transform: translateX(100%); transition: transform var(--dur) var(--ease);
+    }
+    .inspector[data-open="true"] { transform: translateX(0); }
+    .inspector header {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 16px; border-bottom: 1px solid var(--border);
+    }
+    .inspector .title { min-width: 0; flex: 1; }
+    .inspector h2 {
+      font-size: 17px; font-weight: 650; margin: 0 0 6px; color: var(--ink);
+      line-height: 1.25; word-break: break-word; text-wrap: balance;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+      color: var(--ink-2); background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: var(--radius-pill);
+      padding: 3px 9px 3px 7px;
+    }
+    .meta { font-size: 13px; color: var(--muted); margin-top: 6px;
+            font-variant-numeric: tabular-nums; }
+    .icon-btn {
+      flex: none; width: 32px; height: 32px; border: 0; border-radius: 7px;
+      background: transparent; color: var(--muted); cursor: pointer; font-size: 18px;
+      display: flex; align-items: center; justify-content: center;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+    }
+    .icon-btn:hover { background: var(--surface-2); color: var(--ink); }
+    .icon-btn:focus-visible { outline: none; box-shadow: var(--focus); }
+
+    .rel-head { padding: 14px 16px 6px; font-size: 11px; font-weight: 600;
+                text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    .rels { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+    .rel {
+      display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+      padding: 9px 10px; border: 0; background: transparent; cursor: pointer;
+      border-radius: var(--radius-sm); font: inherit; color: var(--ink-2);
+      transition: background var(--dur) var(--ease);
+    }
+    .rel:hover { background: var(--accent-weak); color: var(--ink); }
+    .rel:focus-visible { outline: none; box-shadow: var(--focus); }
+    .rel .dir { flex: none; width: 22px; height: 22px; border-radius: 6px;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 13px; background: var(--surface-2); color: var(--muted); }
+    .rel .pred { font-size: 12px; color: var(--muted); }
+    .rel .other { font-size: 14px; color: inherit; font-weight: 550;
+                  word-break: break-word; }
+    .rel .body { min-width: 0; }
+    @media (max-width: 520px) {
+      .inspector { width: 100%; top: auto; height: 62dvh; border-left: 0;
+                   border-top: 1px solid var(--border);
+                   border-radius: var(--radius) var(--radius) 0 0;
+                   transform: translateY(100%); }
+      .inspector[data-open="true"] { transform: translateY(0); }
+    }
+
+    /* --- Overlays: Laden / leer / Fehler ------------------------------- */
+    .overlay {
+      position: absolute; inset: 0; z-index: var(--z-overlay); display: none;
+      align-items: center; justify-content: center; padding: 24px;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(2px);
+    }
+    .overlay[data-show="true"] { display: flex; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: var(--shadow-md);
+      padding: 28px; max-width: 460px; text-align: center;
+    }
+    .card .glyph { font-size: 28px; line-height: 1; }
+    .card h2 { font-size: 18px; font-weight: 650; margin: 12px 0 6px; color: var(--ink); }
+    .card p { font-size: 14px; line-height: 1.6; color: var(--ink-2); margin: 0 auto 6px;
+              max-width: 38ch; }
+    .card code { font-size: 13px; background: var(--surface-2); color: var(--accent-strong);
+                 border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
+    .card .actions { margin-top: 16px; }
+    .btn-primary {
+      height: 38px; padding: 0 16px; border: 0; border-radius: var(--radius-sm);
+      background: var(--accent); color: #fff; font: inherit; font-size: 14px;
+      font-weight: 600; cursor: pointer;
+      transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+    }
+    .btn-primary:hover { background: var(--accent-strong); }
+    .btn-primary:focus-visible { outline: none; box-shadow: var(--focus); }
+
+    /* Lade-Indikator: drei pulsierende Punkte (kein Spinner mitten im Inhalt). */
+    .loader { display: inline-flex; gap: 6px; }
+    .loader span {
+      width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+      animation: pulse 1s var(--ease) infinite; opacity: .35;
+    }
+    .loader span:nth-child(2) { animation-delay: .15s; }
+    .loader span:nth-child(3) { animation-delay: .3s; }
+    @keyframes pulse { 0%,100% { opacity: .3; transform: scale(.85); }
+                       50% { opacity: 1; transform: scale(1); } }
+
+    .visually-hidden {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+      .loader span { animation: none; opacity: .8; }
+    }
+  </style>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">
+      <h1>Wissensgraph</h1>
+      <span class="ctx">Sipwise C5</span>
+    </div>
+    <a class="btn" href="/" aria-label="Zurück zum Chat">← Chat</a>
+
+    <div class="search" id="searchWrap">
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="2"/>
+        <path d="m18 18-4.5-4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <input id="search" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Entität suchen" aria-label="Entität im Graphen suchen" />
+      <span class="kbd">/</span>
+      <button class="clear" id="searchClear" type="button" aria-label="Suche löschen">×</button>
+    </div>
+
+    <div class="spacer"></div>
+    <div class="stats" id="stats" aria-live="polite"></div>
+  </header>
+
+  <main class="stage">
+    <div id="graph"></div>
+
+    <section class="legend" id="legend" hidden aria-label="Legende der Entitätstypen">
+      <h2>Typen</h2>
+      <ul id="legendList"></ul>
+    </section>
+
+    <div class="controls" role="group" aria-label="Zoom-Steuerung">
+      <button id="zoomIn" type="button" aria-label="Vergrößern">+</button>
+      <button id="zoomOut" type="button" aria-label="Verkleinern">−</button>
+      <button id="zoomFit" type="button" aria-label="Ansicht einpassen" title="Einpassen">⤢</button>
+    </div>
+
+    <aside class="inspector" id="inspector" data-open="false" aria-label="Details zur Auswahl">
+      <header>
+        <div class="title">
+          <h2 id="insName">—</h2>
+          <span class="badge"><span class="dot" id="insDot"></span><span id="insType">—</span></span>
+          <div class="meta" id="insMeta"></div>
+        </div>
+        <button class="icon-btn" id="insClose" type="button" aria-label="Auswahl aufheben">×</button>
+      </header>
+      <div class="rel-head" id="relHead">Beziehungen</div>
+      <div class="rels" id="rels"></div>
+    </aside>
+
+    <div class="overlay" id="overlay" data-show="true">
+      <div class="card" id="overlayCard">
+        <div class="glyph"><span class="loader" aria-hidden="true"><span></span><span></span><span></span></span></div>
+        <h2>Graph wird geladen</h2>
+        <p>Knoten und Beziehungen werden aus Neo4j gelesen.</p>
+      </div>
+    </div>
+  </main>
+
+  <p class="visually-hidden" id="live" aria-live="polite"></p>
+
+  <!-- Lokal vendort -> kein CDN, bleibt offline (Projekt-Grundprinzip). -->
+  <script src="/vendor/force-graph.min.js"></script>
+  <script>
+    "use strict";
+
+    // -- Farbzuordnung: feste Farben für häufige Typen, stabiler Hash sonst. --
+    const FIXED_COLORS = {
+      Component: "#2563eb", Platform: "#7c3aed", Protocol: "#0e7490",
+      Database: "#047857", Concept: "#b45309", Service: "#be185d",
+      Feature: "#4338ca", Unknown: "#64748b",
+    };
+    const PALETTE = ["#0f766e", "#a16207", "#9333ea", "#0369a1", "#15803d", "#c026d3"];
+    const dynColors = new Map();
+    function colorFor(type) {
+      if (FIXED_COLORS[type]) return FIXED_COLORS[type];
+      if (!dynColors.has(type)) {
+        let h = 0;
+        for (const ch of String(type)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+        dynColors.set(type, PALETTE[h % PALETTE.length]);
+      }
+      return dynColors.get(type);
+    }
+    const nodeRadius = (n) => 3.5 + Math.sqrt(n.degree || 0) * 1.7;
+
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const MS = reduceMotion ? 0 : 500;
+
+    // -- DOM-Verweise ---------------------------------------------------------
+    const el = (id) => document.getElementById(id);
+    const graphEl = el("graph"), overlay = el("overlay"), overlayCard = el("overlayCard");
+    const statsEl = el("stats"), legend = el("legend"), legendList = el("legendList");
+    const searchWrap = el("searchWrap"), searchInput = el("search"), searchClear = el("searchClear");
+    const inspector = el("inspector"), live = el("live");
+
+    // -- Zustand --------------------------------------------------------------
+    const highlightNodes = new Set();
+    const highlightLinks = new Set();
+    let selectedId = null;
+    let neighbors = new Map();   // id -> Set(nachbar-id)
+    let incident = new Map();    // id -> Set(link)
+    let labels = new Map();      // id -> label
+    let nodeById = new Map();    // id -> node (force-graph-Objekt)
+    let Graph = null;
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+    function announce(msg) { live.textContent = msg; }
+
+    function showOverlay(html) { overlayCard.innerHTML = html; overlay.dataset.show = "true"; }
+    function hideOverlay() { overlay.dataset.show = "false"; }
+
+    // -- Daten laden ----------------------------------------------------------
+    async function load() {
+      showOverlay(`<div class="glyph"><span class="loader" aria-hidden="true">
+        <span></span><span></span><span></span></span></div>
+        <h2>Graph wird geladen</h2><p>Knoten und Beziehungen werden aus Neo4j gelesen.</p>`);
+      let data;
+      try {
+        const res = await fetch("/graph_data");
+        data = await res.json();
+      } catch (e) {
+        return showOverlay(`<div class="glyph">⚠️</div>
+          <h2>Daten nicht erreichbar</h2>
+          <p>Läuft die API? Starte sie mit <code>uvicorn src.api:app</code>.</p>
+          <div class="actions"><button class="btn-primary" onclick="load()">Erneut versuchen</button></div>`);
+      }
+
+      if (!data.available) {
+        statsEl.textContent = "Neo4j offline";
+        return showOverlay(`<div class="glyph">🔌</div>
+          <h2>Neo4j ist nicht erreichbar</h2>
+          <p>Starte den Container mit <code>docker compose up -d</code> und baue den
+             Graphen mit <code>python -m src.graph_ingest</code>.</p>
+          <div class="actions"><button class="btn-primary" onclick="load()">Erneut versuchen</button></div>`);
+      }
+      if (!data.nodes.length) {
+        statsEl.textContent = "0 Knoten";
+        return showOverlay(`<div class="glyph">🪢</div>
+          <h2>Der Wissensgraph ist leer</h2>
+          <p>Baue ihn zuerst mit <code>python -m src.graph_ingest</code> (Neo4j muss laufen).</p>
+          <div class="actions"><button class="btn-primary" onclick="load()">Erneut versuchen</button></div>`);
+      }
+
+      statsEl.textContent =
+        `${data.stats.nodes.toLocaleString("de")} Knoten · ${data.stats.edges.toLocaleString("de")} Kanten`
+        + (data.stats.truncated ? " (begrenzt)" : "");
+      announce(`Graph geladen: ${data.stats.nodes} Knoten, ${data.stats.edges} Kanten.`);
+
+      buildIndexes(data.nodes, data.links);
+      buildLegend(data.nodes);
+      render(data);
+      hideOverlay();
+    }
+
+    // Nachbarschaft VOR force-graph aufbauen (es ersetzt link.source/target
+    // anschließend durch Knoten-Objekte; per id bleibt es eindeutig).
+    function buildIndexes(nodes, links) {
+      neighbors = new Map(nodes.map((n) => [n.id, new Set()]));
+      incident = new Map(nodes.map((n) => [n.id, new Set()]));
+      labels = new Map(nodes.map((n) => [n.id, n.label]));
+      for (const l of links) {
+        neighbors.get(l.source)?.add(l.target);
+        neighbors.get(l.target)?.add(l.source);
+        incident.get(l.source)?.add(l);
+        incident.get(l.target)?.add(l);
+      }
+    }
+
+    function buildLegend(nodes) {
+      const counts = new Map();
+      for (const n of nodes) counts.set(n.type, (counts.get(n.type) || 0) + 1);
+      const types = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+      legendList.replaceChildren();
+      for (const [t] of types) {
+        const li = document.createElement("li");
+        li.innerHTML = `<span class="dot" style="background:${colorFor(t)}"></span>${escapeHtml(t)}`;
+        legendList.appendChild(li);
+      }
+      legend.hidden = types.length === 0;
+    }
+
+    function setHighlight(id) {
+      highlightNodes.clear(); highlightLinks.clear();
+      if (id && neighbors.has(id)) {
+        highlightNodes.add(id);
+        for (const nb of neighbors.get(id)) highlightNodes.add(nb);
+        for (const l of incident.get(id)) highlightLinks.add(l);
+      }
+    }
+
+    // -- Detail-Panel ---------------------------------------------------------
+    function linkEnds(l) {
+      // Nach force-graph sind source/target Objekte; vorher ids.
+      const s = typeof l.source === "object" ? l.source.id : l.source;
+      const t = typeof l.target === "object" ? l.target.id : l.target;
+      return [s, t];
+    }
+    function openInspector(id) {
+      const node = nodeById.get(id);
+      if (!node) return;
+      el("insName").textContent = node.label;
+      el("insType").textContent = node.type;
+      el("insDot").style.background = colorFor(node.type);
+      const deg = node.degree || 0;
+      el("insMeta").textContent = `${deg} ${deg === 1 ? "Verbindung" : "Verbindungen"}`;
+
+      const rels = el("rels"); rels.replaceChildren();
+      const seen = [...(incident.get(id) || [])];
+      el("relHead").textContent = seen.length ? "Beziehungen" : "Keine Beziehungen";
+      for (const l of seen) {
+        const [s, t] = linkEnds(l);
+        const outgoing = s === id;
+        const otherId = outgoing ? t : s;
+        const row = document.createElement("button");
+        row.className = "rel"; row.type = "button";
+        row.innerHTML =
+          `<span class="dir" aria-hidden="true">${outgoing ? "→" : "←"}</span>
+           <span class="body"><span class="pred">${escapeHtml(l.type)}</span><br>
+           <span class="other">${escapeHtml(labels.get(otherId) || otherId)}</span></span>`;
+        row.setAttribute("aria-label",
+          `${outgoing ? "" : "von "}${labels.get(otherId) || otherId}, Beziehung ${l.type}`);
+        row.addEventListener("click", () => selectNode(otherId, true));
+        rels.appendChild(row);
+      }
+      inspector.dataset.open = "true";
+      announce(`Ausgewählt: ${node.label}, ${deg} ${deg === 1 ? "Verbindung" : "Verbindungen"}.`);
+    }
+    function closeInspector() {
+      // force-graph rendert in einer Animationsschleife -> die geänderte
+      // Hervorhebung erscheint von selbst im nächsten Frame.
+      inspector.dataset.open = "false"; selectedId = null; setHighlight(null);
+    }
+
+    function selectNode(id, recenter) {
+      selectedId = id; setHighlight(id);
+      const node = nodeById.get(id);
+      if (recenter && node && node.x !== undefined) {
+        Graph.centerAt(node.x, node.y, MS);
+        Graph.zoom(Math.max(Graph.zoom(), 3.2), MS);
+      }
+      openInspector(id);
+    }
+
+    // -- Graph zeichnen -------------------------------------------------------
+    function render(data) {
+      Graph = ForceGraph()(graphEl)
+        .backgroundColor(getComputedStyle(document.body).getPropertyValue("--bg").trim() || "#f3f4f6")
+        .graphData(data)
+        .nodeId("id")
+        .nodeRelSize(1)
+        .nodeLabel((n) => `${escapeHtml(n.label)} · ${escapeHtml(n.type)}`)
+        .linkColor((l) => (highlightLinks.has(l) ? "#2563eb" : "rgba(101,111,128,0.20)"))
+        .linkWidth((l) => (highlightLinks.has(l) ? 1.8 : 0.8))
+        .linkDirectionalArrowLength((l) => (highlightLinks.has(l) ? 4.5 : 0))
+        .linkDirectionalArrowRelPos(1)
+        .linkLabel((l) => escapeHtml(l.type))
+        .onNodeHover((node) => {
+          graphEl.style.cursor = node ? "pointer" : "default";
+          if (selectedId) return;               // Klick-Auswahl hat Vorrang
+          setHighlight(node ? node.id : null);
+        })
+        .onNodeClick((node) => selectNode(node.id, true))
+        .onBackgroundClick(closeInspector)
+        .nodeCanvasObject((node, ctx, scale) => {
+          const r = nodeRadius(node);
+          const dim = highlightNodes.size > 0 && !highlightNodes.has(node.id);
+          ctx.globalAlpha = dim ? 0.16 : 1;
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
+          ctx.fillStyle = colorFor(node.type);
+          ctx.fill();
+          const isSel = node.id === selectedId;
+          if (!dim && (highlightNodes.has(node.id) || isSel)) {
+            ctx.lineWidth = (isSel ? 2.2 : 1.4) / scale;
+            ctx.strokeStyle = isSel ? "#111726" : "rgba(17,23,38,.55)";
+            ctx.stroke();
+          }
+          if (scale > 1.7 || highlightNodes.has(node.id)) {
+            const fs = Math.max(11 / scale, 2.6);
+            ctx.font = `${fs}px -apple-system, system-ui, sans-serif`;
+            ctx.textAlign = "center"; ctx.textBaseline = "top";
+            ctx.fillStyle = dim ? "rgba(17,23,38,.25)" : "#111726";
+            ctx.fillText(node.label, node.x, node.y + r + 1.5);
+          }
+          ctx.globalAlpha = 1;
+        })
+        .nodePointerAreaPaint((node, color, ctx) => {
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, nodeRadius(node) + 2.5, 0, 2 * Math.PI);
+          ctx.fillStyle = color; ctx.fill();
+        });
+
+      Graph.d3Force("charge").strength(-95);
+      nodeById = new Map(Graph.graphData().nodes.map((n) => [n.id, n]));
+
+      const resize = () => Graph.width(graphEl.clientWidth).height(graphEl.clientHeight);
+      resize();
+      window.addEventListener("resize", resize);
+      // Einmal automatisch einpassen, sobald sich das Layout gesetzt hat.
+      let fitted = false;
+      Graph.onEngineStop(() => { if (!fitted) { fitted = true; Graph.zoomToFit(MS, 48); } });
+    }
+
+    // -- Suche ----------------------------------------------------------------
+    function runSearch() {
+      const q = searchInput.value.trim().toLowerCase();
+      if (!Graph || !q) return;
+      const nodes = Graph.graphData().nodes;
+      const hit = nodes.find((n) => (n.label || "").toLowerCase().includes(q))
+               || nodes.find((n) => (n.id || "").toLowerCase().includes(q));
+      if (hit) selectNode(hit.id, true);
+      else announce(`Keine Entität für „${searchInput.value.trim()}“ gefunden.`);
+    }
+    searchInput.addEventListener("input", () => {
+      searchWrap.dataset.filled = searchInput.value.trim() ? "true" : "false";
+    });
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") runSearch();
+      if (e.key === "Escape") { searchInput.value = ""; searchWrap.dataset.filled = "false"; searchInput.blur(); }
+    });
+    searchClear.addEventListener("click", () => {
+      searchInput.value = ""; searchWrap.dataset.filled = "false"; searchInput.focus();
+    });
+
+    // -- Zoom-Steuerung -------------------------------------------------------
+    el("zoomIn").addEventListener("click", () => Graph && Graph.zoom(Graph.zoom() * 1.4, MS));
+    el("zoomOut").addEventListener("click", () => Graph && Graph.zoom(Graph.zoom() / 1.4, MS));
+    el("zoomFit").addEventListener("click", () => Graph && Graph.zoomToFit(MS, 48));
+    el("insClose").addEventListener("click", closeInspector);
+
+    // Globale Tastatur: "/" fokussiert die Suche, Esc hebt die Auswahl auf.
+    document.addEventListener("keydown", (e) => {
+      const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "");
+      if (e.key === "/" && !typing) { e.preventDefault(); searchInput.focus(); }
+      if (e.key === "Escape" && selectedId && !typing) closeInspector();
+    });
+
+    load();
+  </script>
+</body>
+</html>

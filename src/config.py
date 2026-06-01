@@ -155,3 +155,17 @@ GRAPH_SEED_ENTITIES = 5
 # Begrenzung, damit der Prompt nicht explodiert und das kleine LLM fokussiert
 # bleibt.
 GRAPH_MAX_FACTS = 30
+
+# --- Graph-Visualisierung (interaktive "Obsidian"-Ansicht im Browser) -------
+# Die Graph-Ansicht (web/graph.html) zeichnet den kompletten Wissensgraphen als
+# interaktives Netz. Damit der Browser bei einem großen Graphen nicht einfriert
+# und der Prompt... äh, das Bild übersichtlich bleibt, begrenzen wir, WIE VIEL
+# wir an den Browser schicken:
+#   GRAPH_VIEW_MAX_EDGES = wie viele Kanten (Beziehungen) wir maximal aus Neo4j
+#       holen. Das ist die harte Obergrenze direkt in der Cypher-Abfrage.
+#   GRAPH_VIEW_MAX_NODES = wie viele Knoten wir maximal anzeigen. Wird die Grenze
+#       überschritten, behalten wir die am stärksten vernetzten Knoten (höchster
+#       Grad) – das sind meist die interessantesten "Drehkreuze" im Graphen.
+# Beide per Umgebungsvariable überschreibbar (wie der Rest der Konfiguration).
+GRAPH_VIEW_MAX_NODES = _env_int("GRAPH_VIEW_MAX_NODES", 250)
+GRAPH_VIEW_MAX_EDGES = _env_int("GRAPH_VIEW_MAX_EDGES", 500)

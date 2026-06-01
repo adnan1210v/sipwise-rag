@@ -102,9 +102,14 @@ sipwise-rag/
 │   ├── graph_retriever.py # [G5] Saat-Knoten finden + Beziehungen folgen (Cypher)
 │   ├── hybrid_retriever.py# kombiniert Vektor- + Graph-Kontext ("Context Fusion")
 │   ├── graph_pipeline.py  # answer_question_graph (hybride Antwort)
+│   ├── graph_view.py      # bereitet den Graphen für die Visualisierung auf (reine Logik)
 │   └── compare.py         # Demo: dieselbe Frage Vector-RAG vs. GraphRAG
 ├── web/
-│   └── index.html         # einfache Web-Oberfläche (Textfeld + Antwort)
+│   ├── index.html         # einfache Web-Oberfläche (Textfeld + Antwort)
+│   ├── graph.html         # interaktive Graph-Visualisierung ("Obsidian"-Netz)
+│   └── vendor/            # lokal abgelegte JS-Bibliothek (force-graph, offline)
+├── tests/
+│   └── test_graph_view.py # Tests der Graph-View-Logik + API-Vertrag
 ├── eval/
 │   ├── test_questions.json
 │   ├── evaluate.py            # misst Vektor-Retrieval-Qualität (Hit@k)
@@ -323,6 +328,48 @@ Wichtiges Interview-Thema – bewusst getroffene Kompromisse auf einem 8-GB-Mac:
 
 > 💡 Hängt die Extraktion mal an einem Chunk (kommt bei kleinen LLMs vor), kann
 > man den Lauf abbrechen – bereits extrahierte Triples sind in Neo4j gespeichert.
+
+---
+
+## 🌐 Graph-Visualisierung (interaktives Netz im Browser)
+
+Der Neo4j-Browser kann den Graphen zwar zeichnen, ist aber ein Admin-Werkzeug.
+Für eine fokussierte, **„Obsidian"-artige** Ansicht direkt in der App gibt es eine
+eigene Seite: ein interaktives, kräftegerichtetes Netz aus Entitäten (Knoten) und
+Beziehungen (Kanten) – komplett lokal, ohne Cloud.
+
+```bash
+uvicorn src.api:app --reload     # API + UI starten
+# dann im Browser:
+#   http://127.0.0.1:8000/        -> Chat (Link "🕸️ Wissensgraph ansehen")
+#   http://127.0.0.1:8000/graph   -> direkt die Graph-Ansicht
+```
+
+Voraussetzung ist ein **befüllter Graph** (`python -m src.graph_ingest`, Neo4j
+muss laufen). Ist Neo4j aus oder der Graph leer, zeigt die Seite einen
+freundlichen Hinweis statt eines Fehlers.
+
+**Was die Ansicht kann:**
+- **Knoten** sind nach Typ eingefärbt (Legende unten links), die Punktgröße
+  richtet sich nach dem **Grad** (Anzahl der Verbindungen).
+- **Hover** hebt einen Knoten und seine direkten Nachbarn hervor.
+- **Klick** wählt einen Knoten aus und öffnet rechts ein **Detail-Panel** mit
+  allen Beziehungen – jede Zeile ist anklickbar, um zum Nachbarn zu springen.
+- **Suche** (Taste `/`) springt zur passenden Entität.
+- **Zoom/Pan**, Knoten ziehen, „Ansicht einpassen" (Steuerung unten links).
+- Bedienbar per Tastatur, mit Fokus-Rahmen und `prefers-reduced-motion`-Fallback.
+
+**Wie es technisch funktioniert (additiv, ändert nichts am Bestehenden):**
+- `GET /graph_data` liefert Knoten + Kanten als JSON (aus `graph_store.fetch_graph`,
+  begrenzt über `config.GRAPH_VIEW_MAX_NODES` / `GRAPH_VIEW_MAX_EDGES`).
+- `GET /graph` liefert die Seite `web/graph.html`.
+- Gezeichnet wird mit **force-graph** – bewusst **lokal vendort** unter
+  `web/vendor/` (kein CDN zur Laufzeit, treu zum Offline-Prinzip).
+
+Tests der Aufbereitungslogik (und des API-Vertrags, falls FastAPI installiert ist):
+```bash
+python -m tests.test_graph_view
+```
 
 ---
 

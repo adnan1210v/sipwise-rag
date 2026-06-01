@@ -241,6 +241,77 @@ def graph_stats() -> dict:
     return {"nodes": nodes, "relationships": rels}
 
 
+def fetch_graph(max_nodes: int | None = None, max_edges: int | None = None) -> dict:
+    """
+    Holt den GESAMTEN Graphen (bis zu einer Obergrenze) für die Visualisierung.
+
+    Das ist die Datenquelle der interaktiven Browser-Ansicht (web/graph.html).
+    Gegenstück zu retrieve()/graph_retriever, die nur einen kleinen, fragebezogenen
+    Ausschnitt holen – hier wollen wir den Graphen als Ganzes ZEIGEN.
+
+    Ablauf:
+      1. Eine einzige Cypher-Abfrage holt bis zu max_edges Kanten samt ihrer
+         beiden Endknoten.
+      2. graph_view.build_graph_payload() formt daraus Knoten + Kanten fürs Frontend.
+
+    Robustheit: Ist Neo4j nicht erreichbar (Container aus), FANGEN wir den Fehler
+    ab und geben eine leere, aber formgleiche Antwort mit available=False zurück.
+    So bleibt die Web-UI bedienbar und kann einen freundlichen Hinweis anzeigen,
+    statt mit einem 500er-Fehler abzustürzen (gleiche Haltung wie beim /health).
+
+    CYPHER ERKLÄRT:
+      MATCH (s:Entity)-[r:REL]->(o:Entity)
+        -> finde alle Beziehungen samt Start- (s) und Ziel-Knoten (o).
+      RETURN s.name, s.display, ... , r.type, r.source_doc, r.chunk_index
+        -> alles, was das Frontend für Knoten, Kanten und Herkunft braucht.
+      LIMIT $max_edges
+        -> harte Obergrenze, damit ein riesiger Graph den Browser nicht überlastet.
+    """
+    # Import hier (nicht oben), um den Modul-Kopf schlank zu halten – graph_view
+    # ist reine Logik ohne eigene Abhängigkeiten.
+    from . import config
+    from .graph_view import build_graph_payload, empty_payload
+
+    if max_nodes is None:
+        max_nodes = config.GRAPH_VIEW_MAX_NODES
+    if max_edges is None:
+        max_edges = config.GRAPH_VIEW_MAX_EDGES
+
+    try:
+        rows = run_read(
+            """
+            MATCH (s:Entity)-[r:REL]->(o:Entity)
+            RETURN s.name    AS s_name, s.display AS s_disp, s.type AS s_type,
+                   o.name    AS o_name, o.display AS o_disp, o.type AS o_type,
+                   r.type    AS rel,
+                   r.source_doc  AS source_doc,
+                   r.chunk_index AS chunk_index
+            LIMIT $max_edges
+            """,
+            max_edges=max_edges,
+        )
+    except Exception as e:
+        # Neo4j aus / nicht erreichbar -> leere, formgleiche Antwort.
+        return empty_payload(
+            available=False,
+            message=f"Neo4j ist nicht erreichbar ({e}). Läuft der Container "
+                    f"(docker compose up -d) und wurde der Graph gebaut "
+                    f"(python -m src.graph_ingest)?",
+        )
+
+    payload = build_graph_payload(rows, max_nodes=max_nodes)
+    payload["available"] = True
+    # Hinweis ergänzen, falls der Graph zwar erreichbar, aber (noch) leer ist.
+    if not payload["nodes"]:
+        payload["message"] = (
+            "Der Wissensgraph ist leer. Baue ihn zuerst mit "
+            "'python -m src.graph_ingest' (Neo4j muss laufen)."
+        )
+    else:
+        payload["message"] = None
+    return payload
+
+
 def _normalize(name: str) -> str:
     """
     Vereinheitlicht einen Entitätsnamen zum eindeutigen Schlüssel.
